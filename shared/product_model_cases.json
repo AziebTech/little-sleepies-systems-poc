@@ -1,0 +1,182 @@
+{
+  "_comment": "Cases for the v2 SKU rules (real Little Sleepies format: DIVISION-STYLE-COLORWAY[-SIZE]). Run by both the JS and Python suites.",
+  "buildBase": [
+    {
+      "division": "Sleep",
+      "style": "0108",
+      "colorway": "0665",
+      "expected": "S-0108-0665"
+    },
+    {
+      "division": "Play",
+      "style": "0060",
+      "colorway": "0005",
+      "expected": "D-0060-0005"
+    },
+    {
+      "division": "Other",
+      "style": "0179",
+      "colorway": "0030",
+      "expected": "O-0179-0030"
+    },
+    {
+      "division": "Sleep",
+      "style": " 0108 ",
+      "colorway": "0665",
+      "expected": "S-0108-0665"
+    },
+    {
+      "division": "Outerwear",
+      "style": "0108",
+      "colorway": "0665",
+      "expected": null
+    },
+    {
+      "division": "Sleep",
+      "style": "108",
+      "colorway": "0665",
+      "expected": null
+    },
+    {
+      "division": "Sleep",
+      "style": "0108",
+      "colorway": "91",
+      "expected": null
+    },
+    {
+      "division": "Sleep",
+      "style": "0108",
+      "colorway": null,
+      "expected": null
+    }
+  ],
+  "parse": [
+    {
+      "sku": "S-0108-0665-10",
+      "expected": {
+        "divisionCode": "S",
+        "division": "Sleep",
+        "style": "0108",
+        "colorway": "0665",
+        "sizeCode": "10"
+      }
+    },
+    {
+      "sku": "D-0060-0005-34",
+      "expected": {
+        "divisionCode": "D",
+        "division": "Play",
+        "style": "0060",
+        "colorway": "0005",
+        "sizeCode": "34"
+      }
+    },
+    {
+      "sku": "O-0179-0030",
+      "expected": {
+        "divisionCode": "O",
+        "division": "Other",
+        "style": "0179",
+        "colorway": "0030",
+        "sizeCode": null
+      }
+    },
+    {
+      "sku": "LS-LUNA-2026-001",
+      "expected": null
+    },
+    {
+      "sku": "S-0108-0665-1",
+      "expected": null
+    },
+    {
+      "sku": "X-0108-0665-10",
+      "expected": null
+    },
+    {
+      "sku": "",
+      "expected": null
+    }
+  ],
+  "variants": [
+    {
+      "base": "S-0108-0665",
+      "sizes": [
+        "Preemie",
+        "Newborn",
+        "3T"
+      ],
+      "expected": [
+        "S-0108-0665-10",
+        "S-0108-0665-11",
+        "S-0108-0665-08"
+      ],
+      "unknown": []
+    },
+    {
+      "base": "D-0060-0005",
+      "sizes": [
+        "0-3 months",
+        "18-24 months"
+      ],
+      "expected": [
+        "D-0060-0005-34",
+        "D-0060-0005-38"
+      ],
+      "unknown": []
+    },
+    {
+      "base": "S-0131-0179",
+      "sizes": [
+        "XS",
+        "3XL",
+        "XXXL"
+      ],
+      "expected": [
+        "S-0131-0179-22",
+        "S-0131-0179-32"
+      ],
+      "unknown": [
+        "XXXL"
+      ]
+    }
+  ],
+  "cost": [
+    {
+      "raw": 18.5,
+      "expected": 18.5
+    },
+    {
+      "raw": "18.50",
+      "expected": 18.5
+    },
+    {
+      "raw": "$1,204.999",
+      "expected": 1205
+    },
+    {
+      "raw": " 7 ",
+      "expected": 7
+    },
+    {
+      "raw": 0,
+      "expected": null
+    },
+    {
+      "raw": -3,
+      "expected": null
+    },
+    {
+      "raw": "12.5O",
+      "expected": null
+    },
+    {
+      "raw": "",
+      "expected": null
+    },
+    {
+      "raw": null,
+      "expected": null
+    }
+  ]
+}

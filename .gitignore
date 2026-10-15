@@ -1,0 +1,13 @@
+# Secrets
+.env
+dbt/profiles.yml
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Generated output
+dbt/target/
+dbt/logs/
+reports/

@@ -1,0 +1,60 @@
+{
+  "_comment": "Product model v2: one source of truth for the JS (n8n, inlined at build time) and Python code. Division letters, size labels and size codes were observed on the public littlesleepies.com product feed (Oct 2026). Compliance requirements and milestone lead times are a SIMPLIFIED model for the POC: the real matrix belongs to Compliance & Integrity and the real calendar to Production.",
+  "divisions": {
+    "Sleep": { "code": "S", "fabric": "Lunaluxe" },
+    "Play": { "code": "D", "fabric": "Soluxe" },
+    "Other": { "code": "O", "fabric": null }
+  },
+  "sizeCodes": {
+    "S": [
+      { "label": "Preemie", "code": "10", "sort": 1, "ageGroup": "Baby" },
+      { "label": "Newborn", "code": "11", "sort": 2, "ageGroup": "Baby" },
+      { "label": "0-3 months", "code": "01", "sort": 3, "ageGroup": "Baby" },
+      { "label": "3-6 months", "code": "02", "sort": 4, "ageGroup": "Baby" },
+      { "label": "6-12 months", "code": "03", "sort": 5, "ageGroup": "Baby" },
+      { "label": "12-18 months", "code": "04", "sort": 6, "ageGroup": "Baby" },
+      { "label": "18-24 months", "code": "05", "sort": 7, "ageGroup": "Baby" },
+      { "label": "2T", "code": "12", "sort": 8, "ageGroup": "Toddler" },
+      { "label": "3T", "code": "08", "sort": 9, "ageGroup": "Toddler" },
+      { "label": "4T", "code": "14", "sort": 10, "ageGroup": "Toddler" },
+      { "label": "5/6", "code": "15", "sort": 11, "ageGroup": "Kid" },
+      { "label": "7/8", "code": "16", "sort": 12, "ageGroup": "Kid" },
+      { "label": "9/10", "code": "23", "sort": 13, "ageGroup": "Kid" },
+      { "label": "12/14", "code": "24", "sort": 14, "ageGroup": "Kid" },
+      { "label": "16", "code": "25", "sort": 15, "ageGroup": "Kid" },
+      { "label": "XS", "code": "22", "sort": 16, "ageGroup": "Adult" },
+      { "label": "S", "code": "17", "sort": 17, "ageGroup": "Adult" },
+      { "label": "M", "code": "18", "sort": 18, "ageGroup": "Adult" },
+      { "label": "L", "code": "19", "sort": 19, "ageGroup": "Adult" },
+      { "label": "XL", "code": "20", "sort": 20, "ageGroup": "Adult" },
+      { "label": "XXL", "code": "21", "sort": 21, "ageGroup": "Adult" },
+      { "label": "3XL", "code": "32", "sort": 22, "ageGroup": "Adult" },
+      { "label": "Large", "code": "27", "sort": 23, "ageGroup": "One Size" },
+      { "label": "Newborn - 3T", "code": "29", "sort": 24, "ageGroup": "One Size" }
+    ],
+    "D": [
+      { "label": "0-3 months", "code": "34", "sort": 1, "ageGroup": "Baby" },
+      { "label": "3-6 months", "code": "35", "sort": 2, "ageGroup": "Baby" },
+      { "label": "6-12 months", "code": "36", "sort": 3, "ageGroup": "Baby" },
+      { "label": "12-18 months", "code": "37", "sort": 4, "ageGroup": "Baby" },
+      { "label": "18-24 months", "code": "38", "sort": 5, "ageGroup": "Baby" }
+    ],
+    "O": [
+      { "label": "One Size", "code": "26", "sort": 1, "ageGroup": "One Size" }
+    ]
+  },
+  "complianceProfiles": {
+    "Children's Sleepwear": ["Lead (CPSIA)", "Phthalates (CPSIA)", "Snug-Fit Dimensions (16 CFR 1615/1616)", "Tracking Label", "Children's Product Certificate"],
+    "Children's Apparel": ["Lead (CPSIA)", "Flammability (16 CFR 1610)", "Tracking Label", "Children's Product Certificate"],
+    "Children's Accessory": ["Lead (CPSIA)", "Tracking Label", "Children's Product Certificate"],
+    "Adult Apparel": ["Flammability (16 CFR 1610)"]
+  },
+  "milestones": [
+    { "key": "sample", "label": "Pre-production sample approved", "team": "Production", "daysBeforeLaunch": 90 },
+    { "key": "license", "label": "Licensor approval", "team": "Product", "daysBeforeLaunch": 75, "licensedOnly": true },
+    { "key": "compliance", "label": "Compliance tests passed", "team": "Compliance & Integrity", "daysBeforeLaunch": 60 },
+    { "key": "photo", "label": "Photography delivered", "team": "Photography", "daysBeforeLaunch": 30 },
+    { "key": "erp", "label": "Synced to the ERP", "team": "Systems", "daysBeforeLaunch": 21 }
+  ],
+  "atRiskWindowDays": 7
+}

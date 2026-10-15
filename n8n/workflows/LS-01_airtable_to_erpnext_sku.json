@@ -1,0 +1,896 @@
+{
+  "id": "lsWf01SkuProvisn",
+  "name": "LS-01 Airtable Colorway → ERPNext: Style Template + Size Variants",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## LS-01 Colorway → ERPNext template + size variants\n**Ready for ERP** = Production Status *Approved for Production* AND Compliance Status *Passed* (computed by LS-06).\n**Trigger A:** Airtable automation POSTs `{ recordId }`. **Trigger B:** 6-hourly sweep of ready, unsynced colorways.\n\n1. Style Master, Prints, Size Codes loaded **once per run** and joined in code\n2. Template `S-0108-0901` (NetSuite: matrix parent) upserted by `custom_airtable_record_id`\n3. ONE call asks ERPNext to create the size variants `S-0108-0901-10`… (skips sizes that exist; large size runs are queued to a worker)\n\nTransient ERP errors → *Pending* (auto-retry). Permanent → *Error*.",
+        "width": 560,
+        "height": 360
+      },
+      "id": "12836508-c372-4759-a54f-e53a6eb7f9ed",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "airtable-approved",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "id": "f02d5d9e-3a71-48a9-a4d6-94e5c7e0b9c2",
+      "name": "Airtable Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "92841c26-cf04-4643-a867-1bc0fb888500",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsWebhookTokenCr",
+          "name": "LS Inbound Webhook Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Colorways/{{ $json.body.recordId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "a6e74fb4-4703-4590-a309-7a8ec885982d",
+      "name": "Fetch Airtable Colorway",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "25a7850c-cb8a-4105-a389-2a05f798986d",
+      "name": "Safety-Net Poll (6h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Colorways",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filterByFormula",
+              "value": "AND({Production Status}='Approved for Production', {Compliance Status}='Passed', OR({Sync Status}='', {Sync Status}='Not Synced', {Sync Status}='Pending'))"
+            },
+            {
+              "name": "pageSize",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "offset",
+                    "value": "={{ $response.body.offset }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.offset }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50,
+              "requestInterval": 250
+            }
+          }
+        }
+      },
+      "id": "927f298e-e329-4f58-ad64-45f0cb02fd86",
+      "name": "List Ready & Unsynced",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        220
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mode: Run Once for All Items\n// Accepts either a single Airtable record ({ id, fields }) from the webhook branch\n// or a list response ({ records: [...] }) from the safety-net poll, and emits one\n// item per record. De-dupes so a webhook and a poll racing each other sync once.\n// Record IDs already handled in this run.\nconst seen = new Set();\n// The list of items this node will output.\nconst out = [];\n// Go through each incoming item; idx is its position (0, 1, 2…).\n$input.all().forEach((item, idx) => {\n  // Short name for the item's data.\n  const j = item.json;\n  // A list response? Use its records. A single record? Wrap it in a list. Neither? Empty list.\n  const records = Array.isArray(j.records) ? j.records : j.id && j.fields ? [j] : [];\n  // Go through each record.\n  for (const r of records) {\n    // Already handled this record? Skip it.\n    if (seen.has(r.id)) continue;\n    // Remember it so we skip it next time.\n    seen.add(r.id);\n    // Output it in one consistent shape, linked back to the input item it came from.\n    out.push({ json: { recordId: r.id, fields: r.fields || {} }, pairedItem: { item: idx } });\n  }\n});\n// Send all the records on to the next node.\nreturn out;\n"
+      },
+      "id": "d358d147-539b-4650-adc2-2eb8725a2e67",
+      "name": "Normalize Records",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Style%20Master",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pageSize",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "offset",
+                    "value": "={{ $response.body.offset }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.offset }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50,
+              "requestInterval": 250
+            }
+          }
+        }
+      },
+      "id": "0e5abcff-590d-4ee5-a22a-3f673641b4fd",
+      "name": "Load Style Master",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        100
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Prints",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pageSize",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "offset",
+                    "value": "={{ $response.body.offset }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.offset }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50,
+              "requestInterval": 250
+            }
+          }
+        }
+      },
+      "id": "7e9f68f9-5ba6-446f-a446-41dfd6d85c71",
+      "name": "Load Prints",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        100
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Size%20Codes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pageSize",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "offset",
+                    "value": "={{ $response.body.offset }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.offset }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50,
+              "requestInterval": 250
+            }
+          }
+        }
+      },
+      "id": "dd6358d9-1916-4107-a575-7f08b8601356",
+      "name": "Load Size Codes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        100
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mode: Run Once for All Items\n// Colorway → ERP style template + size-variant request. Style Master, Prints and Size Codes\n// are loaded ONCE per run (the \"Load …\" nodes run once, paginated) and joined here, rather\n// than fetching them per colorway.\n// ---- lib/product-model.js -------------------------------------------------\n// Product model v2: real Little Sleepies SKU structure + launch critical path.\n// Python twin for the SKU rules: python/ls_integrations/product_model.py.\n// The line below is replaced at build time with the contents of shared/product_model.json,\n// available here as PRODUCT_MODEL (divisions, size codes, compliance profiles, milestones).\nconst PRODUCT_MODEL = {\"_comment\":\"Product model v2: one source of truth for the JS (n8n, inlined at build time) and Python code. Division letters, size labels and size codes were observed on the public littlesleepies.com product feed (Oct 2026). Compliance requirements and milestone lead times are a SIMPLIFIED model for the POC: the real matrix belongs to Compliance & Integrity and the real calendar to Production.\",\"divisions\":{\"Sleep\":{\"code\":\"S\",\"fabric\":\"Lunaluxe\"},\"Play\":{\"code\":\"D\",\"fabric\":\"Soluxe\"},\"Other\":{\"code\":\"O\",\"fabric\":null}},\"sizeCodes\":{\"S\":[{\"label\":\"Preemie\",\"code\":\"10\",\"sort\":1,\"ageGroup\":\"Baby\"},{\"label\":\"Newborn\",\"code\":\"11\",\"sort\":2,\"ageGroup\":\"Baby\"},{\"label\":\"0-3 months\",\"code\":\"01\",\"sort\":3,\"ageGroup\":\"Baby\"},{\"label\":\"3-6 months\",\"code\":\"02\",\"sort\":4,\"ageGroup\":\"Baby\"},{\"label\":\"6-12 months\",\"code\":\"03\",\"sort\":5,\"ageGroup\":\"Baby\"},{\"label\":\"12-18 months\",\"code\":\"04\",\"sort\":6,\"ageGroup\":\"Baby\"},{\"label\":\"18-24 months\",\"code\":\"05\",\"sort\":7,\"ageGroup\":\"Baby\"},{\"label\":\"2T\",\"code\":\"12\",\"sort\":8,\"ageGroup\":\"Toddler\"},{\"label\":\"3T\",\"code\":\"08\",\"sort\":9,\"ageGroup\":\"Toddler\"},{\"label\":\"4T\",\"code\":\"14\",\"sort\":10,\"ageGroup\":\"Toddler\"},{\"label\":\"5/6\",\"code\":\"15\",\"sort\":11,\"ageGroup\":\"Kid\"},{\"label\":\"7/8\",\"code\":\"16\",\"sort\":12,\"ageGroup\":\"Kid\"},{\"label\":\"9/10\",\"code\":\"23\",\"sort\":13,\"ageGroup\":\"Kid\"},{\"label\":\"12/14\",\"code\":\"24\",\"sort\":14,\"ageGroup\":\"Kid\"},{\"label\":\"16\",\"code\":\"25\",\"sort\":15,\"ageGroup\":\"Kid\"},{\"label\":\"XS\",\"code\":\"22\",\"sort\":16,\"ageGroup\":\"Adult\"},{\"label\":\"S\",\"code\":\"17\",\"sort\":17,\"ageGroup\":\"Adult\"},{\"label\":\"M\",\"code\":\"18\",\"sort\":18,\"ageGroup\":\"Adult\"},{\"label\":\"L\",\"code\":\"19\",\"sort\":19,\"ageGroup\":\"Adult\"},{\"label\":\"XL\",\"code\":\"20\",\"sort\":20,\"ageGroup\":\"Adult\"},{\"label\":\"XXL\",\"code\":\"21\",\"sort\":21,\"ageGroup\":\"Adult\"},{\"label\":\"3XL\",\"code\":\"32\",\"sort\":22,\"ageGroup\":\"Adult\"},{\"label\":\"Large\",\"code\":\"27\",\"sort\":23,\"ageGroup\":\"One Size\"},{\"label\":\"Newborn - 3T\",\"code\":\"29\",\"sort\":24,\"ageGroup\":\"One Size\"}],\"D\":[{\"label\":\"0-3 months\",\"code\":\"34\",\"sort\":1,\"ageGroup\":\"Baby\"},{\"label\":\"3-6 months\",\"code\":\"35\",\"sort\":2,\"ageGroup\":\"Baby\"},{\"label\":\"6-12 months\",\"code\":\"36\",\"sort\":3,\"ageGroup\":\"Baby\"},{\"label\":\"12-18 months\",\"code\":\"37\",\"sort\":4,\"ageGroup\":\"Baby\"},{\"label\":\"18-24 months\",\"code\":\"38\",\"sort\":5,\"ageGroup\":\"Baby\"}],\"O\":[{\"label\":\"One Size\",\"code\":\"26\",\"sort\":1,\"ageGroup\":\"One Size\"}]},\"complianceProfiles\":{\"Children's Sleepwear\":[\"Lead (CPSIA)\",\"Phthalates (CPSIA)\",\"Snug-Fit Dimensions (16 CFR 1615/1616)\",\"Tracking Label\",\"Children's Product Certificate\"],\"Children's Apparel\":[\"Lead (CPSIA)\",\"Flammability (16 CFR 1610)\",\"Tracking Label\",\"Children's Product Certificate\"],\"Children's Accessory\":[\"Lead (CPSIA)\",\"Tracking Label\",\"Children's Product Certificate\"],\"Adult Apparel\":[\"Flammability (16 CFR 1610)\"]},\"milestones\":[{\"key\":\"sample\",\"label\":\"Pre-production sample approved\",\"team\":\"Production\",\"daysBeforeLaunch\":90},{\"key\":\"license\",\"label\":\"Licensor approval\",\"team\":\"Product\",\"daysBeforeLaunch\":75,\"licensedOnly\":true},{\"key\":\"compliance\",\"label\":\"Compliance tests passed\",\"team\":\"Compliance & Integrity\",\"daysBeforeLaunch\":60},{\"key\":\"photo\",\"label\":\"Photography delivered\",\"team\":\"Photography\",\"daysBeforeLaunch\":30},{\"key\":\"erp\",\"label\":\"Synced to the ERP\",\"team\":\"Systems\",\"daysBeforeLaunch\":21}],\"atRiskWindowDays\":7};\n// DIVISION-STYLE-COLORWAY[-SIZE], e.g. S-0108-0665-10 (Sleep, Zippy, colorway 0665, Preemie).\n// The colorway number is per style: the same print has a different number on each style.\n// Pattern: S, D or O, then 4 digits, then 4 digits, then optionally 2 more digits for the size.\nconst SKU_PATTERN = /^([SDO])-(\\d{4})-(\\d{4})(?:-(\\d{2}))?$/;\n\n// Turn a division letter (e.g. \"S\") into its name (e.g. \"Sleep\"), or null if unknown.\nfunction divisionByCode(code) {\n  return Object.keys(PRODUCT_MODEL.divisions).find((d) => PRODUCT_MODEL.divisions[d].code === code) || null;\n}\n\n// Build the colorway SKU (e.g. \"S-0108-0665\") from its parts. Returns null if any part is bad.\nfunction buildSkuBase({ division, styleNumber, colorwayNumber }) {\n  // The division's settings (including its letter code).\n  const d = PRODUCT_MODEL.divisions[division];\n  // Style and colorway numbers as text with spaces trimmed.\n  const style = String(styleNumber ?? '').trim();\n  const colorway = String(colorwayNumber ?? '').trim();\n  // Unknown division, or a number that isn't exactly 4 digits? Can't build a SKU.\n  if (!d || !/^\\d{4}$/.test(style) || !/^\\d{4}$/.test(colorway)) return null;\n  // Join the parts with dashes.\n  return `${d.code}-${style}-${colorway}`;\n}\n\n// Split a SKU into its parts. Returns null if it isn't a valid SKU.\nfunction parseSku(sku) {\n  // Check the SKU against the pattern; m holds the matched pieces.\n  const m = String(sku ?? '').trim().match(SKU_PATTERN);\n  // Didn't match the pattern.\n  if (!m) return null;\n  // m[1] = division letter, m[2] = style, m[3] = colorway, m[4] = size code (may be missing).\n  return { divisionCode: m[1], division: divisionByCode(m[1]), style: m[2], colorway: m[3], sizeCode: m[4] || null };\n}\n\n// Variant SKUs for a size run. Size codes depend on the division (0-3 months is 01 in Sleep, 34 in Play).\nfunction sizeRunSkus(skuBase, sizeLabels) {\n  // Split the colorway SKU into its parts.\n  const parsed = parseSku(skuBase);\n  // That division's list of sizes and their codes (empty list if unknown).\n  const table = parsed ? PRODUCT_MODEL.sizeCodes[parsed.divisionCode] || [] : [];\n  // Sizes we found a code for.\n  const variants = [];\n  // Sizes we couldn't find a code for.\n  const unknown = [];\n  // Look up each size label.\n  for (const label of sizeLabels || []) {\n    const size = table.find((s) => s.label === label);\n    // Found: add the full SKU, e.g. \"S-0108-0665-10\".\n    if (size) variants.push({ size: label, sku: `${skuBase}-${size.code}`, sort: size.sort });\n    // Not found: note it.\n    else unknown.push(label);\n  }\n  // Put the sizes in their natural order (smallest first).\n  variants.sort((a, b) => a.sort - b.sort);\n  return { variants, unknown };\n}\n\n// Turn a size code (e.g. \"10\") into its label (e.g. \"Preemie\"). Falls back to the code.\nfunction sizeLabelFor(divisionCode, sizeCode) {\n  const size = (PRODUCT_MODEL.sizeCodes[divisionCode] || []).find((s) => s.code === sizeCode);\n  return size ? size.label : sizeCode;\n}\n\n// ERPNext Item Attribute per division: the same label has different codes per division\n// (0-3 months = 01 in Sleep, 34 in Play), and an attribute value can only have one abbreviation.\nfunction sizeAttributeName(division) {\n  // e.g. \"Size (Sleep)\".\n  return `Size (${division})`;\n}\n\n// Accepts 18.5, \"18.50\", \"$1,204.99\". Returns a 2-dp number, or null if not a positive amount.\nfunction parseCost(raw) {\n  // Nothing given.\n  if (raw === null || raw === undefined) return null;\n  // Numbers stay as they are; text has \"$\", commas and spaces removed.\n  const cleaned = typeof raw === 'number' ? raw : String(raw).replace(/[$,\\s]/g, '');\n  // Empty, or not a plain number like \"12\" or \"12.50\"? Reject it.\n  if (cleaned === '' || !/^-?\\d*\\.?\\d+$/.test(String(cleaned))) return null;\n  // Convert to a number.\n  const n = Number(cleaned);\n  // Must be a real number above zero.\n  if (!Number.isFinite(n) || n <= 0) return null;\n  // Round to cents.\n  return Math.round(n * 100) / 100;\n}\n\n// ---- colorway → ERP template + size variants (LS-01) ----------------------\n// lookups: Maps of Airtable record id → fields for Style Master, Prints and Size Codes.\n// The template's item_code is the SKU base; ERPNext names each variant\n// template-code + \"-\" + attribute abbreviation, i.e. exactly S-0108-0665-10.\nfunction transformColorway({ recordId, fields = {} }, { styles, prints, sizeCodes }) {\n  // Every problem found. If this stays empty, the colorway is valid.\n  const errors = [];\n  // The linked style and print (first linked ID), or null if none.\n  const style = styles.get((fields.Style || [])[0]) || null;\n  const print = prints.get((fields.Print || [])[0]) || null;\n  // The colorway name with spaces trimmed.\n  const name = String(fields.Colorway || '').trim();\n\n  // Basic checks: approved, compliance passed, and has a name, style and print.\n  if (fields['Production Status'] !== 'Approved for Production') errors.push(`Production Status is \"${fields['Production Status'] || ''}\", expected \"Approved for Production\"`);\n  if (fields['Compliance Status'] !== 'Passed') errors.push(`Compliance Status is \"${fields['Compliance Status'] || 'not computed'}\": every required test must pass first (see the Critical Path field)`);\n  if (!name) errors.push('Colorway name is required');\n  if (!style) errors.push('No style linked');\n  if (!print) errors.push('No print linked');\n\n  // The division comes from the style (e.g. \"Sleep\").\n  const division = style ? style.Division : null;\n  // Build the colorway SKU from the division, style number and colorway number.\n  const skuBase = style ? buildSkuBase({ division, styleNumber: style['Style Number'], colorwayNumber: fields['Colorway Number'] }) : null;\n  // Couldn't build it? The colorway number must be wrong.\n  if (style && !skuBase) errors.push(`Colorway Number \"${fields['Colorway Number'] || ''}\" must be 4 digits`);\n  // Check the fabric is the right one for this division.\n  if (style && style.Fabric && !fabricMatchesDivision(division, style.Fabric)) errors.push(`${division} styles should be ${PRODUCT_MODEL.divisions[division].fabric}, not ${style.Fabric}`);\n\n  // The style's sizes: turn each linked size ID into its record, dropping any not found.\n  const runRows = style ? (style['Size Run'] || []).map((id) => sizeCodes.get(id)).filter(Boolean) : [];\n  // Any sizes that belong to a different division (a data mistake).\n  const wrongDivision = runRows.filter((s) => s.Division !== division).map((s) => s['Size Label']);\n  // No sizes at all.\n  if (style && !runRows.length) errors.push(`Style ${style['Style Number']} has no Size Run`);\n  // Sizes from the wrong division.\n  if (wrongDivision.length) errors.push(`Size Run includes ${division ? 'non-' + division : 'mismatched'} sizes: ${wrongDivision.join(', ')}`);\n  // The correct sizes, in their sort order, as labels (e.g. [\"Preemie\", \"Newborn\", …]).\n  const sizes = runRows.filter((s) => s.Division === division).sort((a, b) => a['Sort Order'] - b['Sort Order']).map((s) => s['Size Label']);\n  // Check every size has a size code.\n  const { unknown } = skuBase ? sizeRunSkus(skuBase, sizes) : { unknown: [] };\n  if (unknown.length) errors.push(`No size code for ${unknown.join(', ')} in division ${division}`);\n\n  // Cost and retail prices as clean numbers (null if bad).\n  const cost = parseCost(fields['Cost Price']);\n  const retail = style ? parseCost(style['Retail Price']) : null;\n  // Launch date as \"YYYY-MM-DD\", or null.\n  const launch = fields['Launch Date'] ? String(fields['Launch Date']).slice(0, 10) : null;\n  // Price and date checks.\n  if (cost === null) errors.push('Cost Price must be a positive amount');\n  if (style && retail === null) errors.push(`Style ${style['Style Number']} needs a Retail Price`);\n  if (!launch) errors.push('Launch Date is required');\n\n  // Valid if no problems were found.\n  const valid = errors.length === 0;\n  // The ERP size attribute for this division, e.g. \"Size (Sleep)\".\n  const attribute = division ? sizeAttributeName(division) : null;\n  // Fields shared by \"create\" and \"update\" (only built when valid).\n  const common = valid ? {\n    // Name cut to 140 characters (ERPNext's limit).\n    item_name: name.slice(0, 140),\n    item_group: division,\n    brand: 'Little Sleepies',\n    // \"<Print Name> <Style Name>. <Fiber Content>\".\n    description: `${print['Print Name']} ${style['Style Name']}. ${style['Fiber Content'] || ''}`.trim(),\n    valuation_rate: cost,\n    // Links back to Airtable so we can find this item again (keeps the sync idempotent).\n    custom_airtable_record_id: recordId,\n    // The rest are custom fields copied from the style, print and colorway.\n    custom_style_id: style['Style Number'],\n    custom_colorway_number: String(fields['Colorway Number']).trim(),\n    custom_print_name: print['Print Name'],\n    custom_print_family: print.Slug || null,\n    custom_print_category: print['Print Category'] || null,\n    custom_product_type: style['Product Type'] || null,\n    custom_fabric_type: style.Fabric || null,\n    custom_fiber_content: style['Fiber Content'] || null,\n    custom_compliance_profile: style['Compliance Profile'] || null,\n    custom_launch_date: launch,\n    // Merch date, or the launch date if there isn't one.\n    custom_merch_date: fields['Merch Date'] ? String(fields['Merch Date']).slice(0, 10) : launch,\n    custom_inventory_tier: fields['Inventory Tier'] ?? null,\n    // ERPNext checkboxes use 1/0, not true/false.\n    custom_limited_edition: fields['Limited Edition'] ? 1 : 0,\n    custom_purchase_limit: fields['Purchase Limit'] ?? null,\n    custom_retail_price: retail,\n    // Sizes stored as one text field, e.g. \"Preemie|Newborn|0-3 Months\".\n    custom_size_run: sizes.join('|'),\n  } : null;\n\n  return {\n    recordId,\n    colorwayName: name,\n    skuBase,\n    valid,\n    errors,\n    sizes,\n    approvedAt: null,\n    // Template-only fields can't change once variants exist, so updates send `common` only.\n    // Full payload for creating a new style template (null if invalid).\n    templatePayload: valid ? {\n      item_code: skuBase, stock_uom: 'Nos', is_stock_item: 1, is_purchase_item: 1, is_sales_item: 1,\n      has_variants: 1, variant_based_on: 'Item Attribute', attributes: [{ attribute }], ...common,\n    } : null,\n    // Payload for updating an existing template.\n    updatePayload: common,\n    // erpnext.controllers.item_variant.enqueue_multiple_variant_creation expects args as a JSON string.\n    // Request asking ERPNext to create one variant per size (null if invalid).\n    variantRequest: valid ? { item: skuBase, args: JSON.stringify({ [attribute]: sizes }) } : null,\n  };\n}\n\n// The list of compliance tests a profile requires, or null if the profile is unknown.\nfunction requiredTests(profile) {\n  return PRODUCT_MODEL.complianceProfiles[profile] || null;\n}\n\n// true if the fabric is the one this division expects (or the division has no rule).\nfunction fabricMatchesDivision(division, fabric) {\n  const expected = (PRODUCT_MODEL.divisions[division] || {}).fabric;\n  return !expected || expected === fabric;\n}\n\n// ---- dates (date-only, UTC) ----------------------------------------------\n// Add (or with a negative number, subtract) days from a \"YYYY-MM-DD\" date.\nfunction addDaysIso(iso, days) {\n  // Midnight UTC on that date, so time zones can't shift the day.\n  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00Z`);\n  d.setUTCDate(d.getUTCDate() + days);\n  // Back to \"YYYY-MM-DD\".\n  return d.toISOString().slice(0, 10);\n}\n// Number of days from one date to another (negative if \"to\" is earlier). 86400000 = ms in a day.\nfunction daysBetween(fromIso, toIso) {\n  return Math.round((Date.parse(`${toIso.slice(0, 10)}T00:00:00Z`) - Date.parse(`${fromIso.slice(0, 10)}T00:00:00Z`)) / 86400000);\n}\n// The latest date in a list (ignoring blanks), or null. \"YYYY-MM-DD\" dates sort correctly as text.\nconst maxDate = (dates) => dates.filter(Boolean).map((d) => String(d).slice(0, 10)).sort().pop() || null;\n\n// ---- critical path --------------------------------------------------------\n// Late = past due and not done. A blocked milestone (failed test, rejected sample) is only\n// \"late\" once it's past due; before that it's a risk. Shared by the timeline and the digest.\nconst isLate = (m) => m.status === 'open_late' || (m.status === 'blocked' && m.daysLate > 0);\n// Inputs are Airtable `fields` objects. Returns the Colorway fields to write back and one\n// row per milestone (for the warehouse snapshot and the team digest).\nfunction computeCriticalPath({ colorway, style, print, samples = [], tests = [], shots = [], today }) {\n  // Data problems found along the way.\n  const issues = [];\n  if (!style) issues.push('No style linked');\n  if (!print) issues.push('No print linked');\n  // Build the colorway SKU (null if we can't).\n  const skuBase = style\n    ? buildSkuBase({ division: style.Division, styleNumber: style['Style Number'], colorwayNumber: colorway['Colorway Number'] })\n    : null;\n  // Have a style but no SKU? The colorway number must be wrong.\n  if (style && !skuBase) issues.push(`Colorway Number \"${colorway['Colorway Number'] ?? ''}\" must be 4 digits (style ${style['Style Number']}, ${style.Division})`);\n  // Wrong fabric for the division.\n  if (style && style.Fabric && !fabricMatchesDivision(style.Division, style.Fabric)) {\n    issues.push(`${style.Division} styles should be ${PRODUCT_MODEL.divisions[style.Division].fabric}, not ${style.Fabric}`);\n  }\n\n  // Sample: the pre-production (PP) sample approval is the gate.\n  // Only the pre-production samples.\n  const pp = samples.filter((s) => s.Round === 'Pre-Production');\n  // An approved one, if any.\n  const ppApproved = pp.find((s) => s.Status === 'Approved');\n  // The most recent one (sorted by decision date, take the last). slice() copies so the original isn't reordered.\n  const ppLatest = pp.slice().sort((a, b) => String(a['Decision Date'] || '').localeCompare(String(b['Decision Date'] || ''))).pop();\n  // Overall sample status.\n  const sampleStatus = ppApproved ? 'Approved' : samples.length ? 'In Progress' : 'Not Started';\n\n  // Compliance: every test the style's profile requires must be Passed (or Not Applicable).\n  // The tests this style needs.\n  const required = style ? requiredTests(style['Compliance Profile']) : null;\n  if (style && !required) issues.push(`Unknown Compliance Profile \"${style['Compliance Profile'] ?? ''}\"`);\n  // Helper: the most recent test of one type (by result date, or submitted date if no result yet).\n  const latestOfType = (type) => tests.filter((t) => t['Test Type'] === type)\n    .sort((a, b) => String(a['Result Date'] || a['Submitted Date'] || '').localeCompare(String(b['Result Date'] || b['Submitted Date'] || ''))).pop();\n  // For each required test type, its latest test (may be missing).\n  const perType = (required || []).map((type) => ({ type, test: latestOfType(type) }));\n  // Test types whose latest result failed.\n  const failed = perType.filter((p) => p.test && p.test.Status === 'Failed').map((p) => p.type);\n  // Test types not yet passed (missing, pending or failed).\n  const missing = perType.filter((p) => !p.test || !['Passed', 'Not Applicable'].includes(p.test.Status)).map((p) => p.type);\n  // Overall compliance status.\n  const complianceStatus = !tests.length ? 'Not Started' : failed.length ? 'Failed' : required && !missing.length ? 'Passed' : 'In Testing';\n\n  // Photography: at least one shot, all delivered.\n  const photoDone = shots.length > 0 && shots.every((s) => s.Status === 'Delivered');\n  const photoStatus = photoDone ? 'Complete' : shots.length ? 'In Progress' : 'Not Started';\n\n  // Licensed prints need an extra licensor approval milestone.\n  const licensed = Boolean(print && print.License === 'Licensed');\n  // Launch date as \"YYYY-MM-DD\", or null.\n  const launch = colorway['Launch Date'] ? String(colorway['Launch Date']).slice(0, 10) : null;\n\n  // For each milestone: is it done, when, is it blocked, and any extra note.\n  const state = {\n    // Sample: done when a PP sample is approved; blocked if the latest one was rejected.\n    sample: { done: Boolean(ppApproved), completedOn: ppApproved && ppApproved['Decision Date'],\n      blocked: !ppApproved && ppLatest && ppLatest.Status === 'Rejected' ? 'Last PP sample rejected: new round needed' : null },\n    // License: done when the licensor approves; blocked if they asked for changes.\n    license: { done: print && print['Licensor Approval'] === 'Approved', completedOn: print && print['Licensor Approval Date'],\n      blocked: print && print['Licensor Approval'] === 'Changes Requested' ? 'Licensor requested changes' : null },\n    // Compliance: done when all tests pass (date = last pass); blocked if any failed; note lists what's still waiting.\n    compliance: { done: complianceStatus === 'Passed', completedOn: maxDate(tests.filter((t) => t.Status === 'Passed').map((t) => t['Result Date'])),\n      blocked: failed.length ? `Failed: ${failed.join(', ')}` : null,\n      detail: complianceStatus !== 'Passed' && missing.length && !failed.length ? `Waiting on: ${missing.join(', ')}` : null },\n    // Photo: done when all shots are delivered; note shows progress like \"2/3 shots delivered\".\n    photo: { done: photoDone, completedOn: maxDate(shots.map((s) => s['Delivered Date'])),\n      detail: !photoDone && shots.length ? `${shots.filter((s) => s.Status === 'Delivered').length}/${shots.length} shots delivered` : null },\n    // ERP: done once the colorway has synced to ERPNext.\n    erp: { done: colorway['Sync Status'] === 'Synced', completedOn: colorway['Last Synced At'] },\n  };\n\n  // Build the milestone list from the product model.\n  const milestones = PRODUCT_MODEL.milestones\n    // Skip \"licensed only\" milestones for prints that aren't licensed.\n    .filter((m) => !m.licensedOnly || licensed)\n    .map((m) => {\n      // This milestone's state from above.\n      const s = state[m.key];\n      // Due date = launch date minus this milestone's lead time (null if no launch date).\n      const due = launch ? addDaysIso(launch, -m.daysBeforeLaunch) : null;\n      // Only a finished milestone has a completion date (e.g. the last *passed* test is not\n      // \"compliance passed\" while other required tests are still pending).\n      const completedOn = s.done && s.completedOn ? String(s.completedOn).slice(0, 10) : null;\n      // Work out the status and how many days late.\n      let status;\n      let daysLate = 0;\n      // Done: late if it finished after the due date.\n      if (s.done) {\n        daysLate = completedOn && due ? Math.max(0, daysBetween(due, completedOn)) : 0;\n        status = daysLate > 0 ? 'done_late' : 'done_on_time';\n      // Not done and no due date.\n      } else if (!due) status = 'open_no_date';\n      // Not done, with a due date.\n      else {\n        // Days until due (negative = already past).\n        const daysUntil = daysBetween(today, due);\n        if (daysUntil < 0) daysLate = -daysUntil;\n        // Blocked beats everything; then late; then \"at risk\" if due soon; else on track.\n        status = s.blocked ? 'blocked' : daysUntil < 0 ? 'open_late' : daysUntil <= PRODUCT_MODEL.atRiskWindowDays ? 'open_at_risk' : 'open_on_track';\n      }\n      // One row for this milestone.\n      return { key: m.key, label: m.label, team: m.team, due, completedOn, status, daysLate, note: s.blocked || s.detail || null };\n    });\n\n  // Milestones not yet done.\n  const open = milestones.filter((m) => !m.status.startsWith('done'));\n  // Data issues (e.g. a malformed colorway number) will block the ERP sync later, so they\n  // count as risk even when every date looks fine.\n  // Overall timeline status, checked in this order.\n  const timeline = !launch ? 'No Launch Date'\n    : !open.length ? 'Complete'\n    : open.some(isLate) ? 'Late'\n    : open.some((m) => m.status === 'open_at_risk' || m.status === 'blocked') || issues.length ? 'At Risk'\n    : 'On Track';\n  // The next open milestone with the earliest due date (null if none).\n  const next = open.filter((m) => m.due).sort((a, b) => a.due.localeCompare(b.due))[0] || null;\n\n  // A symbol for each status, used in the text summary.\n  const icon = { done_on_time: '✓', done_late: '✓', open_on_track: '○', open_at_risk: '!', open_late: '✗', blocked: '⛔', open_no_date: '○' };\n  // The text summary, one line per data issue then one per milestone.\n  const lines = [\n    ...issues.map((i) => `⚠ Data: ${i}`),\n    ...milestones.map((m) => {\n      // Done: e.g. \"✓ Sample: done 2026-09-01 (3 days late)\".\n      if (m.status.startsWith('done')) return `${icon[m.status]} ${m.label}: done ${m.completedOn || '(no date)'}${m.daysLate ? ` (${m.daysLate} days late)` : ''}`;\n      // Not done: e.g. \"✗ Photo: due 2026-10-01 (<team>), 11 days late · 2/3 shots delivered\".\n      const when = m.due ? `due ${m.due}` : 'no launch date';\n      const lateness = m.status === 'open_late' || (m.status === 'blocked' && m.daysLate) ? `, ${m.daysLate} days late` : m.status === 'open_at_risk' ? ', at risk' : '';\n      return `${icon[m.status]} ${m.label}: ${when} (${m.team})${lateness}${m.note ? ` · ${m.note}` : ''}`;\n    }),\n  ];\n\n  return {\n    issues,\n    milestones,\n    // The Airtable Colorway fields to write back.\n    fields: {\n      'SKU Base': skuBase || '',\n      'Sample Status': sampleStatus,\n      'Compliance Status': complianceStatus,\n      'Photo Status': photoStatus,\n      'Timeline Status': timeline,\n      'Next Milestone': next ? `${next.label} (${next.team}), due ${next.due}` : '',\n      'Next Due Date': next ? next.due : null,\n      // The most days late of any open milestone (0 if none).\n      'Days Late': Math.max(0, ...open.map((m) => m.daysLate)),\n      'Critical Path': lines.join('\\n'),\n    },\n  };\n}\n\n// Only send fields whose value changed: saves Airtable API calls and keeps the record's\n// revision history meaningful. Airtable omits empty fields, so treat ''/null/undefined alike.\nfunction diffFields(current, computed) {\n  // Helper: treat undefined, null and '' all as null.\n  const norm = (v) => (v === undefined || v === null || v === '' ? null : v);\n  // The fields that differ.\n  const changed = {};\n  // Compare each computed field with what's in Airtable now.\n  for (const [k, v] of Object.entries(computed)) {\n    if (norm(current[k]) !== norm(v)) changed[k] = v;\n  }\n  // Return the changes, or null if nothing changed.\n  return Object.keys(changed).length ? changed : null;\n}\n\n// One Slack message for the whole portfolio, grouped by owning team (alert per cause, not\n// one ping per colorway). Returns null when nothing is late or at risk.\nfunction buildTeamDigest(results, { maxPerTeam = 8 } = {}) {\n  // team name → list of problem milestones.\n  const byTeam = new Map();\n  // Data problems across all colorways.\n  const dataIssues = [];\n  // Go through each colorway's results.\n  for (const r of results) {\n    for (const m of r.milestones) {\n      // Only late, blocked or at-risk milestones go in the digest.\n      if (!['open_late', 'blocked', 'open_at_risk'].includes(m.status)) continue;\n      // First one for this team? Start its list.\n      if (!byTeam.has(m.team)) byTeam.set(m.team, []);\n      // Add the milestone, tagged with its colorway.\n      byTeam.get(m.team).push({ ...m, colorway: r.colorwayName, skuBase: r.skuBase });\n    }\n    // Collect this colorway's data issues.\n    for (const issue of r.issues || []) dataIssues.push(`  ⚠ ${r.colorwayName}: ${issue}`);\n  }\n  // Nothing to report? No message.\n  if (!byTeam.size && !dataIssues.length) return null;\n  // One section per team, teams in A–Z order.\n  const sections = [...byTeam.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([team, items]) => {\n    // Most days late first; ties broken by earliest due date.\n    items.sort((a, b) => b.daysLate - a.daysLate || String(a.due).localeCompare(String(b.due)));\n    // How many are actually late (the rest are at risk).\n    const late = items.filter(isLate).length;\n    // Section heading, e.g. \"*<team>*: 2 late, 1 at risk\".\n    const head = `*${team}*: ${late} late, ${items.length - late} at risk`;\n    // One line per milestone, up to maxPerTeam (8).\n    const rows = items.slice(0, maxPerTeam).map((i) =>\n      `  ${i.status === 'blocked' ? '⛔' : isLate(i) ? '✗' : '!'} ${i.colorway}${i.skuBase ? ` (${i.skuBase})` : ''}: ${i.label}, due ${i.due}${i.daysLate ? `, ${i.daysLate} days late` : ''}${i.note ? ` · ${i.note}` : ''}`);\n    // Too many to list? Say how many were left out.\n    if (items.length > maxPerTeam) rows.push(`  …and ${items.length - maxPerTeam} more`);\n    return [head, ...rows].join('\\n');\n  });\n  // Add a data issues section at the end, if there are any.\n  if (dataIssues.length) sections.push([`*Data issues* (fix in Airtable): ${dataIssues.length}`, ...dataIssues.slice(0, maxPerTeam)].join('\\n'));\n  // Put it all together under one title.\n  return [':calendar: *Launch critical path*: milestones late or due within a week', ...sections].join('\\n');\n}\n\n// Split a list into smaller lists of \"size\" items each, e.g. chunk([1,2,3], 2) → [[1,2],[3]].\nfunction chunk(arr, size) {\n  const out = [];\n  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));\n  return out;\n}\n// Helper: get every Airtable record from a node, joining all its pages into one list.\nconst recs = (node) => $(node).all().flatMap((i) => i.json.records || []);\n// Helper: build a lookup table \"record id → fields\" for a node, for quick finds by ID.\nconst byId = (node) => new Map(recs(node).map((r) => [r.id, r.fields]));\n// Build the three lookup tables once, up front.\nconst lookups = { styles: byId('Load Style Master'), prints: byId('Load Prints'), sizeCodes: byId('Load Size Codes') };\n\n// For each colorway: check it and build the ERP payloads. Output one item per colorway.\nreturn $('Normalize Records').all().map((item) => ({ json: transformColorway(item.json, lookups), pairedItem: { item: 0 } }));\n"
+      },
+      "id": "a9321d66-c469-4aba-a5ca-2f27059d5855",
+      "name": "Validate & Build ERP Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "937e2d30-3fb8-4322-a0c6-d80b887a89d7",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "dc511d61-3383-40cb-aa8a-3226012d6b40",
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.ERPNEXT_BASE_URL }}/api/resource/Item",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filters",
+              "value": "={{ JSON.stringify([[\"custom_airtable_record_id\", \"=\", $json.recordId], [\"has_variants\", \"=\", 1]]) }}"
+            },
+            {
+              "name": "fields",
+              "value": "[\"name\"]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "31eb488d-311b-4efb-a6de-ccf0016ca06b",
+      "name": "Find Existing ERP Template",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsErpnextApiCred",
+          "name": "ERPNext API (integration user)"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "ae33ffa0-7d97-472a-a7e5-772599433084",
+              "leftValue": "={{ ($json.data || []).length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "197ca9a3-95c7-4e5a-a6c0-9348de6c896b",
+      "name": "Already in ERP?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.ERPNEXT_BASE_URL }}/api/resource/Item/{{ encodeURIComponent($json.data[0].name) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Validate & Build ERP Payload').item.json.updatePayload) }}",
+        "options": {}
+      },
+      "id": "8fd5860f-e94e-498b-a708-44e8d581dc1a",
+      "name": "Update ERP Template",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        -160
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsErpnextApiCred",
+          "name": "ERPNext API (integration user)"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ERPNEXT_BASE_URL }}/api/resource/Item",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Validate & Build ERP Payload').item.json.templatePayload) }}",
+        "options": {}
+      },
+      "id": "50571aca-eec0-4ed3-aae4-98a4f385d049",
+      "name": "Create ERP Template",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        20
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsErpnextApiCred",
+          "name": "ERPNext API (integration user)"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ERPNEXT_BASE_URL }}/api/method/erpnext.controllers.item_variant.enqueue_multiple_variant_creation",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Validate & Build ERP Payload').item.json.variantRequest) }}",
+        "options": {}
+      },
+      "id": "1de2ec38-4bad-42b0-a040-8cd3358de885",
+      "name": "Create Size Variants",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        -60
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsErpnextApiCred",
+          "name": "ERPNext API (integration user)"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Mode: Run Once for Each Item\n// Success path: the style template is created/updated and ERPNext accepted the size-variant\n// request. ERPNext creates up to 9 variants inline (returns the count) and queues larger\n// size runs to a background worker (returns \"queued\"); existing sizes are skipped.\n// ---- lib/sync-helpers.js ------------------------------------------------\n// Error parsing, audit rows, Airtable write-backs and PO explosion shared by\n// the n8n Code nodes. Pure functions only — no n8n globals in here.\n\n// Frappe/ERPNext maps exceptions to HTTP codes; knowing them speeds up triage.\n// Lookup table: HTTP status code → a short, readable error category.\nconst ERP_ERROR_CATEGORIES = {\n  401: 'auth',            // AuthenticationError — bad/expired API key:secret\n  403: 'permission',      // PermissionError — role lacks perm on the DocType\n  404: 'not_found',       // DoesNotExistError\n  409: 'duplicate',       // DuplicateEntryError — item_code already exists\n  417: 'validation',      // ValidationError / LinkValidationError / MandatoryError\n  429: 'rate_limited',\n};\n\n// Pulls a JSON object out of an error string. n8n 2.x formats HTTP errors as\n//   417 - \"{\\\"exc_type\\\":\\\"LinkValidationError\\\",...}\"\n// i.e. the response body as a JSON *string literal*, so it may need two parses.\nfunction extractJsonBody(part) {\n  // Already an object? Nothing to do, return it.\n  if (part && typeof part === 'object') return part;\n  // Make it text, strip a leading \"417 - \" style status code, and trim spaces.\n  const s = String(part || '').replace(/^\\s*\\d{3} - /, '').trim();\n  // Two things to try: the whole text, and just the part from the first \"{\" to the last \"}\".\n  const attempts = [s, s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)];\n  // Try each one in turn.\n  for (const candidate of attempts) {\n    try {\n      // Read the text as JSON.\n      let v = JSON.parse(candidate);\n      // If that gave us more text (JSON inside a string), read it as JSON again.\n      if (typeof v === 'string') v = JSON.parse(v);\n      // Got a real object? Return it.\n      if (v && typeof v === 'object') return v;\n    } catch { /* try the next shape */ }\n  }\n  // Nothing worked: no JSON found.\n  return null;\n}\n\n// Normalizes an n8n error-output item ({ error: {...} }) from an HTTP Request node.\n// Shape verified against n8n 2.39.6 (see tests); kept defensive for other versions.\nfunction summarizeHttpError(itemJson) {\n  // The error details: inside \"error\" if present, else the item itself, else an empty object.\n  const e = (itemJson && itemJson.error) || itemJson || {};\n  // Gather every bit of error text we can find into one string, separated by \" | \".\n  const text = [e.message, typeof e.description === 'string' ? e.description : '', typeof e === 'string' ? e : '']\n    // Drop the empty bits.\n    .filter(Boolean)\n    // Make sure each bit is text.\n    .map(String)\n    // Join them.\n    .join(' | ');\n\n  // Look for the HTTP status code in the usual fields (null if none found).\n  let httpStatus = Number(e.httpCode || e.statusCode || e.status) || null;\n  // Not found? Try to read it from the error text instead.\n  if (!httpStatus) {\n    // Only trust the shapes n8n/axios actually emit (\"409 - ...\", \"status code 502\"),\n    // so digits inside IPs or ports (ECONNREFUSED 172.18.0.5:8080) aren't misread.\n    const m = text.match(/^([1-5]\\d{2}) - /) || text.match(/status code ([1-5]\\d{2})\\b/i);\n    // Found a match? Use the 3-digit number. Otherwise still null.\n    httpStatus = m ? Number(m[1]) : null;\n  }\n\n  // Pull exc_type / _server_messages (ERPNext) or error.message (Airtable) out of the body.\n  // The error type name, e.g. \"LinkValidationError\".\n  let excType = null;\n  // The human-readable message from the server.\n  let serverMessage = null;\n  // Look for a JSON body in the message, or failing that in the description.\n  const body = extractJsonBody(e.message) || extractJsonBody(e.description);\n  // Only dig further if we found one.\n  if (body) {\n    // ERPNext puts the type in exc_type; Airtable puts it in error.type.\n    excType = body.exc_type || (body.error && body.error.type) || null;\n    // ERPNext style 1: a list of messages, itself stored as JSON text.\n    if (body._server_messages) {\n      try {\n        // Read the list, then read each message (also JSON) and keep its \"message\" part.\n        serverMessage = JSON.parse(body._server_messages)\n          .map((m) => { try { return JSON.parse(m).message; } catch { return m; } })\n          // Join them with \"; \".\n          .join('; ');\n      } catch { /* malformed — ignore */ }\n    // ERPNext style 2: a Python traceback. The last line holds the actual error.\n    } else if (body.exception) {\n      serverMessage = String(body.exception).split('\\n').pop();\n    // Airtable style: error.message.\n    } else if (body.error && body.error.message) {\n      serverMessage = body.error.message;\n    }\n    // Remove any HTML tags (like <b>) from the message.\n    if (serverMessage) serverMessage = serverMessage.replace(/<[^>]+>/g, '');\n  }\n\n  // Pick a category: from the table above, else \"server\" for 5xx codes,\n  // \"client\" for other codes, or \"network\" if there was no code at all.\n  const category = ERP_ERROR_CATEGORIES[httpStatus] || (httpStatus >= 500 ? 'server' : httpStatus ? 'client' : 'network');\n  // These kinds of error usually fix themselves, so it's worth trying again later.\n  const retryable = category === 'server' || category === 'rate_limited' || category === 'network';\n  // Plain-text bodies arrive JSON-quoted (sometimes twice): 502 - \"\\\"Bad Gateway\\\"\".\n  // Backup message: the raw error text without the leading status code.\n  let fallback = String(e.message || text || 'Unknown error').replace(/^\\s*\\d{3} - /, '');\n  // Remove up to two layers of JSON quotes.\n  for (let i = 0; i < 2; i++) {\n    try {\n      // Read it as JSON.\n      const v = JSON.parse(fallback);\n      // Not plain text underneath? Stop and keep what we have.\n      if (typeof v !== 'string') break;\n      // Keep the unquoted text.\n      fallback = v;\n    } catch { break; }\n  }\n  // Final message, e.g. \"HTTP 417 — LinkValidationError — Item Group X not found\".\n  const message = [httpStatus && `HTTP ${httpStatus}`, excType, serverMessage || fallback]\n    // Drop empty parts.\n    .filter(Boolean)\n    // Join with \" — \".\n    .join(' — ')\n    // Cut to 1000 characters.\n    .slice(0, 1000);\n\n  // Hand back the summary.\n  return { httpStatus, category, retryable, excType, message };\n}\n\n// One row for audit.sync_audit_logs. Column order matches the INSERT in the Postgres nodes.\n// Takes friendly names (f.entityId) and returns database column names (entity_id).\n// \"|| null\" means: use null when the value is missing.\nfunction auditRow(f) {\n  return {\n    // The n8n run ID as text.\n    execution_id: f.executionId != null ? String(f.executionId) : null,\n    workflow_name: f.workflowName || null,\n    // Where the data came from and where it was going.\n    source_system: f.source,\n    target_system: f.target,\n    // What kind of thing (e.g. sales_order) and which one.\n    entity_type: f.entityType,\n    entity_id: f.entityId || null,\n    sku: f.sku || null,\n    // What we tried and how it went.\n    action: f.action,\n    status: f.status,\n    // \"??\" keeps 0 but turns missing into null.\n    http_status: f.httpStatus ?? null,\n    // Error text cut to 1000 characters, or null if there was no error.\n    error_message: f.errorMessage ? String(f.errorMessage).slice(0, 1000) : null,\n    approved_at: f.approvedAt || null,\n    // Extra details (empty object if none).\n    payload: f.payload || {},\n  };\n}\n\n// PATCH body for writing sync results back onto the Airtable Colorways record.\n// Transient failures go back to \"Pending\" so the safety-net poll retries them;\n// permanent ones go to \"Error\" for a human. (n8n ignores Retry On Fail on nodes that\n// use an error output, so this is the retry mechanism for ERP calls. See RUNBOOK §3.)\nfunction syncWriteback({ status, erpItemCode, errorMessage, nowIso, retryable = false }) {\n  // Did the sync work?\n  const ok = status === 'success';\n  return {\n    fields: {\n      // Worked → \"Synced\". Temporary failure → \"Pending\" (retry). Permanent failure → \"Error\".\n      'Sync Status': ok ? 'Synced' : retryable ? 'Pending' : 'Error',\n      // Only on success: also save the ERP item code.\n      ...(ok && erpItemCode ? { 'ERP Item Code': erpItemCode } : {}),\n      // Clear the error on success; otherwise save it (cut to 5000 characters).\n      'Last Sync Error': ok ? '' : String(errorMessage || '').slice(0, 5000),\n      // When this happened.\n      'Last Synced At': nowIso,\n    },\n    // Let Airtable convert values to the right field type.\n    typecast: true,\n  };\n}\n\n// Airtable formula: {Field}='value' with quotes/backslashes escaped.\nfunction airtableEquals(field, value) {\n  // Make the value text, then put a \"\\\" before any \"\\\" or \"'\" so they can't break the formula.\n  const escaped = String(value ?? '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");\n  // Build the formula, e.g. {ERP Item Code}='S-0108-0901'.\n  return `{${field}}='${escaped}'`;\n}\n\n// ERPNext Purchase Order doc → one row per COLORWAY (POs are placed per size variant,\n// S-0108-0901-10, but Production tracks the colorway S-0108-0901): summed qty, earliest\n// schedule date and a per-size breakdown. Needs lib/product-model.js for parseSku.\nfunction explodePurchaseOrder(po) {\n  // Running totals: colorway SKU → { qty, date, sizes }.\n  const byColorway = new Map();\n  // Go through each line on the PO.\n  for (const line of po.items || []) {\n    // Split the SKU into its parts (division, style, colorway, size).\n    const parsed = parseSku(line.item_code);\n    // The colorway SKU (without the size), or the raw code if it couldn't be parsed.\n    const base = parsed ? `${parsed.divisionCode}-${parsed.style}-${parsed.colorway}` : line.item_code;\n    // The size label (e.g. \"Preemie\"), or null if the SKU has no size.\n    const size = parsed && parsed.sizeCode ? sizeLabelFor(parsed.divisionCode, parsed.sizeCode) : null;\n    // Quantity as a number (0 if missing).\n    const qty = Number(line.qty) || 0;\n    // Delivery date: the line's own date, else the PO's date, else none.\n    const date = line.schedule_date || po.schedule_date || null;\n    // First line for this colorway? Start its running totals at zero.\n    if (!byColorway.has(base)) byColorway.set(base, { qty: 0, date: null, sizes: [] });\n    // Get the running totals for this colorway.\n    const agg = byColorway.get(base);\n    // Add this line's quantity.\n    agg.qty += qty;\n    // Keep the earliest date seen.\n    if (date && (!agg.date || date < agg.date)) agg.date = date;\n    // Note the size and quantity, e.g. \"Preemie ×12\".\n    if (size) agg.sizes.push(`${size} ×${qty}`);\n  }\n  // Turn the totals into one output row per colorway.\n  return [...byColorway.entries()].map(([base, agg]) => ({\n    po_number: po.name,\n    supplier: po.supplier,\n    // The PO status, or work it out: docstatus 1 means submitted, otherwise draft.\n    po_status: po.status || (po.docstatus === 1 ? 'Submitted' : 'Draft'),\n    item_code: base,\n    qty: agg.qty,\n    expected_delivery: agg.date,\n    // Formula used to find the matching Airtable record.\n    airtable_formula: airtableEquals('ERP Item Code', base),\n    // The fields to write onto that Airtable record.\n    airtable_fields: {\n      'PO Number': po.name,\n      'PO Qty': agg.qty,\n      // e.g. \"Preemie ×12, Newborn ×24\" (null if no sizes).\n      'PO Size Breakdown': agg.sizes.join(', ') || null,\n      Vendor: po.supplier,\n      'Expected Delivery': agg.date,\n      'PO Status': po.status || null,\n    },\n  }));\n}\n// The colorway data built earlier by the \"Validate & Build ERP Payload\" node.\nconst ctx = $('Validate & Build ERP Payload').item.json;\n// The result of the earlier lookup for an existing ERP template.\nconst existing = $('Find Existing ERP Template').item.json;\n// If the lookup found something, we updated it; otherwise we created it.\nconst action = (existing.data || []).length ? 'update' : 'create';\n// ERPNext's reply to the variant request: a count, or \"queued\".\nconst variants = $json.message;\n\n// Build one row for the audit log table.\nconst row = auditRow({\n  // Which n8n run and workflow this was.\n  executionId: $execution.id,\n  workflowName: $workflow.name,\n  // Data went from Airtable to ERPNext, as a style template.\n  source: 'airtable', target: 'erpnext', entityType: 'item_template',\n  // Which record and SKU, what we did, and that it worked.\n  entityId: ctx.recordId, sku: ctx.skuBase, action, status: 'success',\n  httpStatus: 200, approvedAt: ctx.approvedAt,\n  // Extra details: colorway name, how many sizes, and the variant result.\n  payload: { colorway: ctx.colorwayName, sizes: ctx.sizes.length, variants_created: variants },\n});\n// Output the audit row, plus the Airtable record ID and the \"Synced\" update to write back to it.\nreturn { json: { ...row, airtable_record_id: ctx.recordId,\n  airtable_patch: syncWriteback({ status: 'success', erpItemCode: ctx.skuBase, nowIso: new Date().toISOString() }) } };\n"
+      },
+      "id": "982036ce-db0a-4bbc-a2fb-9b90eb4d6338",
+      "name": "Result: Synced",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2660,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Mode: Run Once for Each Item\n// ERPNext call failed (template lookup, create/update, or the variant request).\n// ---- lib/sync-helpers.js ------------------------------------------------\n// Error parsing, audit rows, Airtable write-backs and PO explosion shared by\n// the n8n Code nodes. Pure functions only — no n8n globals in here.\n\n// Frappe/ERPNext maps exceptions to HTTP codes; knowing them speeds up triage.\n// Lookup table: HTTP status code → a short, readable error category.\nconst ERP_ERROR_CATEGORIES = {\n  401: 'auth',            // AuthenticationError — bad/expired API key:secret\n  403: 'permission',      // PermissionError — role lacks perm on the DocType\n  404: 'not_found',       // DoesNotExistError\n  409: 'duplicate',       // DuplicateEntryError — item_code already exists\n  417: 'validation',      // ValidationError / LinkValidationError / MandatoryError\n  429: 'rate_limited',\n};\n\n// Pulls a JSON object out of an error string. n8n 2.x formats HTTP errors as\n//   417 - \"{\\\"exc_type\\\":\\\"LinkValidationError\\\",...}\"\n// i.e. the response body as a JSON *string literal*, so it may need two parses.\nfunction extractJsonBody(part) {\n  // Already an object? Nothing to do, return it.\n  if (part && typeof part === 'object') return part;\n  // Make it text, strip a leading \"417 - \" style status code, and trim spaces.\n  const s = String(part || '').replace(/^\\s*\\d{3} - /, '').trim();\n  // Two things to try: the whole text, and just the part from the first \"{\" to the last \"}\".\n  const attempts = [s, s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)];\n  // Try each one in turn.\n  for (const candidate of attempts) {\n    try {\n      // Read the text as JSON.\n      let v = JSON.parse(candidate);\n      // If that gave us more text (JSON inside a string), read it as JSON again.\n      if (typeof v === 'string') v = JSON.parse(v);\n      // Got a real object? Return it.\n      if (v && typeof v === 'object') return v;\n    } catch { /* try the next shape */ }\n  }\n  // Nothing worked: no JSON found.\n  return null;\n}\n\n// Normalizes an n8n error-output item ({ error: {...} }) from an HTTP Request node.\n// Shape verified against n8n 2.39.6 (see tests); kept defensive for other versions.\nfunction summarizeHttpError(itemJson) {\n  // The error details: inside \"error\" if present, else the item itself, else an empty object.\n  const e = (itemJson && itemJson.error) || itemJson || {};\n  // Gather every bit of error text we can find into one string, separated by \" | \".\n  const text = [e.message, typeof e.description === 'string' ? e.description : '', typeof e === 'string' ? e : '']\n    // Drop the empty bits.\n    .filter(Boolean)\n    // Make sure each bit is text.\n    .map(String)\n    // Join them.\n    .join(' | ');\n\n  // Look for the HTTP status code in the usual fields (null if none found).\n  let httpStatus = Number(e.httpCode || e.statusCode || e.status) || null;\n  // Not found? Try to read it from the error text instead.\n  if (!httpStatus) {\n    // Only trust the shapes n8n/axios actually emit (\"409 - ...\", \"status code 502\"),\n    // so digits inside IPs or ports (ECONNREFUSED 172.18.0.5:8080) aren't misread.\n    const m = text.match(/^([1-5]\\d{2}) - /) || text.match(/status code ([1-5]\\d{2})\\b/i);\n    // Found a match? Use the 3-digit number. Otherwise still null.\n    httpStatus = m ? Number(m[1]) : null;\n  }\n\n  // Pull exc_type / _server_messages (ERPNext) or error.message (Airtable) out of the body.\n  // The error type name, e.g. \"LinkValidationError\".\n  let excType = null;\n  // The human-readable message from the server.\n  let serverMessage = null;\n  // Look for a JSON body in the message, or failing that in the description.\n  const body = extractJsonBody(e.message) || extractJsonBody(e.description);\n  // Only dig further if we found one.\n  if (body) {\n    // ERPNext puts the type in exc_type; Airtable puts it in error.type.\n    excType = body.exc_type || (body.error && body.error.type) || null;\n    // ERPNext style 1: a list of messages, itself stored as JSON text.\n    if (body._server_messages) {\n      try {\n        // Read the list, then read each message (also JSON) and keep its \"message\" part.\n        serverMessage = JSON.parse(body._server_messages)\n          .map((m) => { try { return JSON.parse(m).message; } catch { return m; } })\n          // Join them with \"; \".\n          .join('; ');\n      } catch { /* malformed — ignore */ }\n    // ERPNext style 2: a Python traceback. The last line holds the actual error.\n    } else if (body.exception) {\n      serverMessage = String(body.exception).split('\\n').pop();\n    // Airtable style: error.message.\n    } else if (body.error && body.error.message) {\n      serverMessage = body.error.message;\n    }\n    // Remove any HTML tags (like <b>) from the message.\n    if (serverMessage) serverMessage = serverMessage.replace(/<[^>]+>/g, '');\n  }\n\n  // Pick a category: from the table above, else \"server\" for 5xx codes,\n  // \"client\" for other codes, or \"network\" if there was no code at all.\n  const category = ERP_ERROR_CATEGORIES[httpStatus] || (httpStatus >= 500 ? 'server' : httpStatus ? 'client' : 'network');\n  // These kinds of error usually fix themselves, so it's worth trying again later.\n  const retryable = category === 'server' || category === 'rate_limited' || category === 'network';\n  // Plain-text bodies arrive JSON-quoted (sometimes twice): 502 - \"\\\"Bad Gateway\\\"\".\n  // Backup message: the raw error text without the leading status code.\n  let fallback = String(e.message || text || 'Unknown error').replace(/^\\s*\\d{3} - /, '');\n  // Remove up to two layers of JSON quotes.\n  for (let i = 0; i < 2; i++) {\n    try {\n      // Read it as JSON.\n      const v = JSON.parse(fallback);\n      // Not plain text underneath? Stop and keep what we have.\n      if (typeof v !== 'string') break;\n      // Keep the unquoted text.\n      fallback = v;\n    } catch { break; }\n  }\n  // Final message, e.g. \"HTTP 417 — LinkValidationError — Item Group X not found\".\n  const message = [httpStatus && `HTTP ${httpStatus}`, excType, serverMessage || fallback]\n    // Drop empty parts.\n    .filter(Boolean)\n    // Join with \" — \".\n    .join(' — ')\n    // Cut to 1000 characters.\n    .slice(0, 1000);\n\n  // Hand back the summary.\n  return { httpStatus, category, retryable, excType, message };\n}\n\n// One row for audit.sync_audit_logs. Column order matches the INSERT in the Postgres nodes.\n// Takes friendly names (f.entityId) and returns database column names (entity_id).\n// \"|| null\" means: use null when the value is missing.\nfunction auditRow(f) {\n  return {\n    // The n8n run ID as text.\n    execution_id: f.executionId != null ? String(f.executionId) : null,\n    workflow_name: f.workflowName || null,\n    // Where the data came from and where it was going.\n    source_system: f.source,\n    target_system: f.target,\n    // What kind of thing (e.g. sales_order) and which one.\n    entity_type: f.entityType,\n    entity_id: f.entityId || null,\n    sku: f.sku || null,\n    // What we tried and how it went.\n    action: f.action,\n    status: f.status,\n    // \"??\" keeps 0 but turns missing into null.\n    http_status: f.httpStatus ?? null,\n    // Error text cut to 1000 characters, or null if there was no error.\n    error_message: f.errorMessage ? String(f.errorMessage).slice(0, 1000) : null,\n    approved_at: f.approvedAt || null,\n    // Extra details (empty object if none).\n    payload: f.payload || {},\n  };\n}\n\n// PATCH body for writing sync results back onto the Airtable Colorways record.\n// Transient failures go back to \"Pending\" so the safety-net poll retries them;\n// permanent ones go to \"Error\" for a human. (n8n ignores Retry On Fail on nodes that\n// use an error output, so this is the retry mechanism for ERP calls. See RUNBOOK §3.)\nfunction syncWriteback({ status, erpItemCode, errorMessage, nowIso, retryable = false }) {\n  // Did the sync work?\n  const ok = status === 'success';\n  return {\n    fields: {\n      // Worked → \"Synced\". Temporary failure → \"Pending\" (retry). Permanent failure → \"Error\".\n      'Sync Status': ok ? 'Synced' : retryable ? 'Pending' : 'Error',\n      // Only on success: also save the ERP item code.\n      ...(ok && erpItemCode ? { 'ERP Item Code': erpItemCode } : {}),\n      // Clear the error on success; otherwise save it (cut to 5000 characters).\n      'Last Sync Error': ok ? '' : String(errorMessage || '').slice(0, 5000),\n      // When this happened.\n      'Last Synced At': nowIso,\n    },\n    // Let Airtable convert values to the right field type.\n    typecast: true,\n  };\n}\n\n// Airtable formula: {Field}='value' with quotes/backslashes escaped.\nfunction airtableEquals(field, value) {\n  // Make the value text, then put a \"\\\" before any \"\\\" or \"'\" so they can't break the formula.\n  const escaped = String(value ?? '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");\n  // Build the formula, e.g. {ERP Item Code}='S-0108-0901'.\n  return `{${field}}='${escaped}'`;\n}\n\n// ERPNext Purchase Order doc → one row per COLORWAY (POs are placed per size variant,\n// S-0108-0901-10, but Production tracks the colorway S-0108-0901): summed qty, earliest\n// schedule date and a per-size breakdown. Needs lib/product-model.js for parseSku.\nfunction explodePurchaseOrder(po) {\n  // Running totals: colorway SKU → { qty, date, sizes }.\n  const byColorway = new Map();\n  // Go through each line on the PO.\n  for (const line of po.items || []) {\n    // Split the SKU into its parts (division, style, colorway, size).\n    const parsed = parseSku(line.item_code);\n    // The colorway SKU (without the size), or the raw code if it couldn't be parsed.\n    const base = parsed ? `${parsed.divisionCode}-${parsed.style}-${parsed.colorway}` : line.item_code;\n    // The size label (e.g. \"Preemie\"), or null if the SKU has no size.\n    const size = parsed && parsed.sizeCode ? sizeLabelFor(parsed.divisionCode, parsed.sizeCode) : null;\n    // Quantity as a number (0 if missing).\n    const qty = Number(line.qty) || 0;\n    // Delivery date: the line's own date, else the PO's date, else none.\n    const date = line.schedule_date || po.schedule_date || null;\n    // First line for this colorway? Start its running totals at zero.\n    if (!byColorway.has(base)) byColorway.set(base, { qty: 0, date: null, sizes: [] });\n    // Get the running totals for this colorway.\n    const agg = byColorway.get(base);\n    // Add this line's quantity.\n    agg.qty += qty;\n    // Keep the earliest date seen.\n    if (date && (!agg.date || date < agg.date)) agg.date = date;\n    // Note the size and quantity, e.g. \"Preemie ×12\".\n    if (size) agg.sizes.push(`${size} ×${qty}`);\n  }\n  // Turn the totals into one output row per colorway.\n  return [...byColorway.entries()].map(([base, agg]) => ({\n    po_number: po.name,\n    supplier: po.supplier,\n    // The PO status, or work it out: docstatus 1 means submitted, otherwise draft.\n    po_status: po.status || (po.docstatus === 1 ? 'Submitted' : 'Draft'),\n    item_code: base,\n    qty: agg.qty,\n    expected_delivery: agg.date,\n    // Formula used to find the matching Airtable record.\n    airtable_formula: airtableEquals('ERP Item Code', base),\n    // The fields to write onto that Airtable record.\n    airtable_fields: {\n      'PO Number': po.name,\n      'PO Qty': agg.qty,\n      // e.g. \"Preemie ×12, Newborn ×24\" (null if no sizes).\n      'PO Size Breakdown': agg.sizes.join(', ') || null,\n      Vendor: po.supplier,\n      'Expected Delivery': agg.date,\n      'PO Status': po.status || null,\n    },\n  }));\n}\n// The colorway data built earlier by the \"Validate & Build ERP Payload\" node.\nconst ctx = $('Validate & Build ERP Payload').item.json;\n// Turn the raw HTTP error into a tidy summary (status code, category, message, retry or not).\nconst err = summarizeHttpError($json);\n// Build one row for the audit log table.\nconst row = auditRow({\n  // Which n8n run and workflow this was.\n  executionId: $execution.id,\n  workflowName: $workflow.name,\n  // Data was going from Airtable to ERPNext, as a style template.\n  source: 'airtable', target: 'erpnext', entityType: 'item_template',\n  // Which record and SKU, what we tried, and that it failed.\n  entityId: ctx.recordId, sku: ctx.skuBase, action: 'upsert', status: 'failed',\n  httpStatus: err.httpStatus, errorMessage: err.message, approvedAt: ctx.approvedAt,\n  // Extra details saved as JSON for troubleshooting.\n  payload: { colorway: ctx.colorwayName, category: err.category, retryable: err.retryable, exc_type: err.excType },\n});\n// The message shown to the user in Airtable: \"will retry\" for temporary problems, plain error otherwise.\nconst userMessage = err.retryable\n  ? `Temporary ERP problem (${err.category}), will retry automatically on the next sync run: ${err.message}`\n  : `ERP ${err.category}: ${err.message}`;\n// Output the audit row, plus the Airtable record ID and the update to write back to it.\nreturn { json: { ...row, airtable_record_id: ctx.recordId,\n  airtable_patch: syncWriteback({ status: 'failed', errorMessage: userMessage, retryable: err.retryable, nowIso: new Date().toISOString() }) } };\n"
+      },
+      "id": "56482053-ebe7-4f93-a019-97c64843d93d",
+      "name": "Result: ERP Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2660,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Mode: Run Once for Each Item\n// Data-quality failure: never reached ERPNext. Fix in Airtable, then set Sync Status = Pending.\n// ---- lib/sync-helpers.js ------------------------------------------------\n// Error parsing, audit rows, Airtable write-backs and PO explosion shared by\n// the n8n Code nodes. Pure functions only — no n8n globals in here.\n\n// Frappe/ERPNext maps exceptions to HTTP codes; knowing them speeds up triage.\n// Lookup table: HTTP status code → a short, readable error category.\nconst ERP_ERROR_CATEGORIES = {\n  401: 'auth',            // AuthenticationError — bad/expired API key:secret\n  403: 'permission',      // PermissionError — role lacks perm on the DocType\n  404: 'not_found',       // DoesNotExistError\n  409: 'duplicate',       // DuplicateEntryError — item_code already exists\n  417: 'validation',      // ValidationError / LinkValidationError / MandatoryError\n  429: 'rate_limited',\n};\n\n// Pulls a JSON object out of an error string. n8n 2.x formats HTTP errors as\n//   417 - \"{\\\"exc_type\\\":\\\"LinkValidationError\\\",...}\"\n// i.e. the response body as a JSON *string literal*, so it may need two parses.\nfunction extractJsonBody(part) {\n  // Already an object? Nothing to do, return it.\n  if (part && typeof part === 'object') return part;\n  // Make it text, strip a leading \"417 - \" style status code, and trim spaces.\n  const s = String(part || '').replace(/^\\s*\\d{3} - /, '').trim();\n  // Two things to try: the whole text, and just the part from the first \"{\" to the last \"}\".\n  const attempts = [s, s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)];\n  // Try each one in turn.\n  for (const candidate of attempts) {\n    try {\n      // Read the text as JSON.\n      let v = JSON.parse(candidate);\n      // If that gave us more text (JSON inside a string), read it as JSON again.\n      if (typeof v === 'string') v = JSON.parse(v);\n      // Got a real object? Return it.\n      if (v && typeof v === 'object') return v;\n    } catch { /* try the next shape */ }\n  }\n  // Nothing worked: no JSON found.\n  return null;\n}\n\n// Normalizes an n8n error-output item ({ error: {...} }) from an HTTP Request node.\n// Shape verified against n8n 2.39.6 (see tests); kept defensive for other versions.\nfunction summarizeHttpError(itemJson) {\n  // The error details: inside \"error\" if present, else the item itself, else an empty object.\n  const e = (itemJson && itemJson.error) || itemJson || {};\n  // Gather every bit of error text we can find into one string, separated by \" | \".\n  const text = [e.message, typeof e.description === 'string' ? e.description : '', typeof e === 'string' ? e : '']\n    // Drop the empty bits.\n    .filter(Boolean)\n    // Make sure each bit is text.\n    .map(String)\n    // Join them.\n    .join(' | ');\n\n  // Look for the HTTP status code in the usual fields (null if none found).\n  let httpStatus = Number(e.httpCode || e.statusCode || e.status) || null;\n  // Not found? Try to read it from the error text instead.\n  if (!httpStatus) {\n    // Only trust the shapes n8n/axios actually emit (\"409 - ...\", \"status code 502\"),\n    // so digits inside IPs or ports (ECONNREFUSED 172.18.0.5:8080) aren't misread.\n    const m = text.match(/^([1-5]\\d{2}) - /) || text.match(/status code ([1-5]\\d{2})\\b/i);\n    // Found a match? Use the 3-digit number. Otherwise still null.\n    httpStatus = m ? Number(m[1]) : null;\n  }\n\n  // Pull exc_type / _server_messages (ERPNext) or error.message (Airtable) out of the body.\n  // The error type name, e.g. \"LinkValidationError\".\n  let excType = null;\n  // The human-readable message from the server.\n  let serverMessage = null;\n  // Look for a JSON body in the message, or failing that in the description.\n  const body = extractJsonBody(e.message) || extractJsonBody(e.description);\n  // Only dig further if we found one.\n  if (body) {\n    // ERPNext puts the type in exc_type; Airtable puts it in error.type.\n    excType = body.exc_type || (body.error && body.error.type) || null;\n    // ERPNext style 1: a list of messages, itself stored as JSON text.\n    if (body._server_messages) {\n      try {\n        // Read the list, then read each message (also JSON) and keep its \"message\" part.\n        serverMessage = JSON.parse(body._server_messages)\n          .map((m) => { try { return JSON.parse(m).message; } catch { return m; } })\n          // Join them with \"; \".\n          .join('; ');\n      } catch { /* malformed — ignore */ }\n    // ERPNext style 2: a Python traceback. The last line holds the actual error.\n    } else if (body.exception) {\n      serverMessage = String(body.exception).split('\\n').pop();\n    // Airtable style: error.message.\n    } else if (body.error && body.error.message) {\n      serverMessage = body.error.message;\n    }\n    // Remove any HTML tags (like <b>) from the message.\n    if (serverMessage) serverMessage = serverMessage.replace(/<[^>]+>/g, '');\n  }\n\n  // Pick a category: from the table above, else \"server\" for 5xx codes,\n  // \"client\" for other codes, or \"network\" if there was no code at all.\n  const category = ERP_ERROR_CATEGORIES[httpStatus] || (httpStatus >= 500 ? 'server' : httpStatus ? 'client' : 'network');\n  // These kinds of error usually fix themselves, so it's worth trying again later.\n  const retryable = category === 'server' || category === 'rate_limited' || category === 'network';\n  // Plain-text bodies arrive JSON-quoted (sometimes twice): 502 - \"\\\"Bad Gateway\\\"\".\n  // Backup message: the raw error text without the leading status code.\n  let fallback = String(e.message || text || 'Unknown error').replace(/^\\s*\\d{3} - /, '');\n  // Remove up to two layers of JSON quotes.\n  for (let i = 0; i < 2; i++) {\n    try {\n      // Read it as JSON.\n      const v = JSON.parse(fallback);\n      // Not plain text underneath? Stop and keep what we have.\n      if (typeof v !== 'string') break;\n      // Keep the unquoted text.\n      fallback = v;\n    } catch { break; }\n  }\n  // Final message, e.g. \"HTTP 417 — LinkValidationError — Item Group X not found\".\n  const message = [httpStatus && `HTTP ${httpStatus}`, excType, serverMessage || fallback]\n    // Drop empty parts.\n    .filter(Boolean)\n    // Join with \" — \".\n    .join(' — ')\n    // Cut to 1000 characters.\n    .slice(0, 1000);\n\n  // Hand back the summary.\n  return { httpStatus, category, retryable, excType, message };\n}\n\n// One row for audit.sync_audit_logs. Column order matches the INSERT in the Postgres nodes.\n// Takes friendly names (f.entityId) and returns database column names (entity_id).\n// \"|| null\" means: use null when the value is missing.\nfunction auditRow(f) {\n  return {\n    // The n8n run ID as text.\n    execution_id: f.executionId != null ? String(f.executionId) : null,\n    workflow_name: f.workflowName || null,\n    // Where the data came from and where it was going.\n    source_system: f.source,\n    target_system: f.target,\n    // What kind of thing (e.g. sales_order) and which one.\n    entity_type: f.entityType,\n    entity_id: f.entityId || null,\n    sku: f.sku || null,\n    // What we tried and how it went.\n    action: f.action,\n    status: f.status,\n    // \"??\" keeps 0 but turns missing into null.\n    http_status: f.httpStatus ?? null,\n    // Error text cut to 1000 characters, or null if there was no error.\n    error_message: f.errorMessage ? String(f.errorMessage).slice(0, 1000) : null,\n    approved_at: f.approvedAt || null,\n    // Extra details (empty object if none).\n    payload: f.payload || {},\n  };\n}\n\n// PATCH body for writing sync results back onto the Airtable Colorways record.\n// Transient failures go back to \"Pending\" so the safety-net poll retries them;\n// permanent ones go to \"Error\" for a human. (n8n ignores Retry On Fail on nodes that\n// use an error output, so this is the retry mechanism for ERP calls. See RUNBOOK §3.)\nfunction syncWriteback({ status, erpItemCode, errorMessage, nowIso, retryable = false }) {\n  // Did the sync work?\n  const ok = status === 'success';\n  return {\n    fields: {\n      // Worked → \"Synced\". Temporary failure → \"Pending\" (retry). Permanent failure → \"Error\".\n      'Sync Status': ok ? 'Synced' : retryable ? 'Pending' : 'Error',\n      // Only on success: also save the ERP item code.\n      ...(ok && erpItemCode ? { 'ERP Item Code': erpItemCode } : {}),\n      // Clear the error on success; otherwise save it (cut to 5000 characters).\n      'Last Sync Error': ok ? '' : String(errorMessage || '').slice(0, 5000),\n      // When this happened.\n      'Last Synced At': nowIso,\n    },\n    // Let Airtable convert values to the right field type.\n    typecast: true,\n  };\n}\n\n// Airtable formula: {Field}='value' with quotes/backslashes escaped.\nfunction airtableEquals(field, value) {\n  // Make the value text, then put a \"\\\" before any \"\\\" or \"'\" so they can't break the formula.\n  const escaped = String(value ?? '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");\n  // Build the formula, e.g. {ERP Item Code}='S-0108-0901'.\n  return `{${field}}='${escaped}'`;\n}\n\n// ERPNext Purchase Order doc → one row per COLORWAY (POs are placed per size variant,\n// S-0108-0901-10, but Production tracks the colorway S-0108-0901): summed qty, earliest\n// schedule date and a per-size breakdown. Needs lib/product-model.js for parseSku.\nfunction explodePurchaseOrder(po) {\n  // Running totals: colorway SKU → { qty, date, sizes }.\n  const byColorway = new Map();\n  // Go through each line on the PO.\n  for (const line of po.items || []) {\n    // Split the SKU into its parts (division, style, colorway, size).\n    const parsed = parseSku(line.item_code);\n    // The colorway SKU (without the size), or the raw code if it couldn't be parsed.\n    const base = parsed ? `${parsed.divisionCode}-${parsed.style}-${parsed.colorway}` : line.item_code;\n    // The size label (e.g. \"Preemie\"), or null if the SKU has no size.\n    const size = parsed && parsed.sizeCode ? sizeLabelFor(parsed.divisionCode, parsed.sizeCode) : null;\n    // Quantity as a number (0 if missing).\n    const qty = Number(line.qty) || 0;\n    // Delivery date: the line's own date, else the PO's date, else none.\n    const date = line.schedule_date || po.schedule_date || null;\n    // First line for this colorway? Start its running totals at zero.\n    if (!byColorway.has(base)) byColorway.set(base, { qty: 0, date: null, sizes: [] });\n    // Get the running totals for this colorway.\n    const agg = byColorway.get(base);\n    // Add this line's quantity.\n    agg.qty += qty;\n    // Keep the earliest date seen.\n    if (date && (!agg.date || date < agg.date)) agg.date = date;\n    // Note the size and quantity, e.g. \"Preemie ×12\".\n    if (size) agg.sizes.push(`${size} ×${qty}`);\n  }\n  // Turn the totals into one output row per colorway.\n  return [...byColorway.entries()].map(([base, agg]) => ({\n    po_number: po.name,\n    supplier: po.supplier,\n    // The PO status, or work it out: docstatus 1 means submitted, otherwise draft.\n    po_status: po.status || (po.docstatus === 1 ? 'Submitted' : 'Draft'),\n    item_code: base,\n    qty: agg.qty,\n    expected_delivery: agg.date,\n    // Formula used to find the matching Airtable record.\n    airtable_formula: airtableEquals('ERP Item Code', base),\n    // The fields to write onto that Airtable record.\n    airtable_fields: {\n      'PO Number': po.name,\n      'PO Qty': agg.qty,\n      // e.g. \"Preemie ×12, Newborn ×24\" (null if no sizes).\n      'PO Size Breakdown': agg.sizes.join(', ') || null,\n      Vendor: po.supplier,\n      'Expected Delivery': agg.date,\n      'PO Status': po.status || null,\n    },\n  }));\n}\n// All the validation errors joined into one line, separated by \"; \".\nconst message = $json.errors.join('; ');\n// Build one row for the audit log table.\nconst row = auditRow({\n  // Which n8n run and workflow this was.\n  executionId: $execution.id,\n  workflowName: $workflow.name,\n  // Data was going from Airtable to ERPNext, as a style template.\n  source: 'airtable', target: 'erpnext', entityType: 'item_template',\n  // Which record and SKU, the step that failed (validate), and the errors.\n  entityId: $json.recordId, sku: $json.skuBase, action: 'validate', status: 'failed',\n  errorMessage: message, approvedAt: $json.approvedAt,\n  // Extra details: colorway name and the full list of errors.\n  payload: { colorway: $json.colorwayName, errors: $json.errors },\n});\n// Output the audit row, plus the Airtable record ID and the error to show on that record.\nreturn { json: { ...row, airtable_record_id: $json.recordId,\n  airtable_patch: syncWriteback({ status: 'failed', errorMessage: `Validation: ${message}`, nowIso: new Date().toISOString() }) } };\n"
+      },
+      "id": "ed53e9d9-9ae6-4755-afa4-74889037901d",
+      "name": "Result: Validation Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2660,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Colorways/{{ $json.airtable_record_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.airtable_patch) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1100
+            }
+          }
+        }
+      },
+      "id": "8f0924a6-c8a8-4440-a75c-47f1386b72d6",
+      "name": "Write Back to Airtable",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2900,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit.sync_audit_logs\n  (execution_id, workflow_name, source_system, target_system, entity_type, entity_id,\n   sku, action, status, http_status, error_message, approved_at, payload)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::int, $11, $12::timestamptz, $13::jsonb);",
+        "options": {
+          "queryReplacement": "={{ [$json.execution_id, $json.workflow_name, $json.source_system, $json.target_system, $json.entity_type, $json.entity_id, $json.sku, $json.action, $json.status, $json.http_status, $json.error_message, $json.approved_at, JSON.stringify($json.payload || {})] }}"
+        }
+      },
+      "id": "5b0955cb-0653-48d9-a3c1-5ea253002802",
+      "name": "Write Audit Log",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2900,
+        260
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "lsWarehousePgCrd",
+          "name": "LS Warehouse (Postgres)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Airtable Webhook": {
+      "main": [
+        [
+          {
+            "node": "Fetch Airtable Colorway",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Airtable Colorway": {
+      "main": [
+        [
+          {
+            "node": "Normalize Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Safety-Net Poll (6h)": {
+      "main": [
+        [
+          {
+            "node": "List Ready & Unsynced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Ready & Unsynced": {
+      "main": [
+        [
+          {
+            "node": "Normalize Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Records": {
+      "main": [
+        [
+          {
+            "node": "Load Style Master",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Style Master": {
+      "main": [
+        [
+          {
+            "node": "Load Prints",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Prints": {
+      "main": [
+        [
+          {
+            "node": "Load Size Codes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Size Codes": {
+      "main": [
+        [
+          {
+            "node": "Validate & Build ERP Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Build ERP Payload": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Find Existing ERP Template",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result: Validation Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Existing ERP Template": {
+      "main": [
+        [
+          {
+            "node": "Already in ERP?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result: ERP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already in ERP?": {
+      "main": [
+        [
+          {
+            "node": "Update ERP Template",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create ERP Template",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update ERP Template": {
+      "main": [
+        [
+          {
+            "node": "Create Size Variants",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result: ERP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create ERP Template": {
+      "main": [
+        [
+          {
+            "node": "Create Size Variants",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result: ERP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Size Variants": {
+      "main": [
+        [
+          {
+            "node": "Result: Synced",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result: ERP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result: Synced": {
+      "main": [
+        [
+          {
+            "node": "Write Back to Airtable",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result: ERP Error": {
+      "main": [
+        [
+          {
+            "node": "Write Back to Airtable",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result: Validation Failed": {
+      "main": [
+        [
+          {
+            "node": "Write Back to Airtable",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "lsWf00ErrorHndlr"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}

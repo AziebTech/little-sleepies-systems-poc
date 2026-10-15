@@ -1,0 +1,286 @@
+# Little Sleepies Systems POC — local, free-tier stack
+#
+#   ERPNext (NetSuite stand-in)  http://localhost:8080   (Administrator / admin)
+#   n8n (integration engine)     http://localhost:5678
+#   Postgres "warehouse"         localhost:5433          (Snowflake stand-in)
+#   Adminer (SQL UI)             http://localhost:8081
+#
+# ERPNext services are adapted from frappe/frappe_docker pwd.yml (the official
+# "play with docker" single-site setup). Everything shares one network so n8n can
+# call ERPNext at http://frontend:8080 and ERPNext webhooks can call http://n8n:5678.
+#
+# Usage:
+#   docker compose up -d                      # core stack
+#   docker compose --profile tunnel up -d     # + Cloudflare quick tunnel so Airtable can reach n8n
+#   docker compose --profile tools run --rm tools python scripts/setup_erpnext.py
+
+x-erpnext-image: &erpnext-image
+  image: frappe/erpnext:${ERPNEXT_VERSION:-v16.50.0}
+
+x-erpnext-volumes: &erpnext-volumes
+  - sites:/home/frappe/frappe-bench/sites
+  - logs:/home/frappe/frappe-bench/logs
+
+x-erpnext-redis-env: &erpnext-redis-env
+  FRAPPE_REDIS_CACHE: redis://redis-cache:6379
+  FRAPPE_REDIS_QUEUE: redis://redis-queue:6379
+
+services:
+  # ---------------------------------------------------------------- ERPNext
+  backend:
+    <<: *erpnext-image
+    networks: [ls_net]
+    restart: on-failure
+    volumes: *erpnext-volumes
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      MYSQL_ROOT_PASSWORD: ${ERPNEXT_DB_ROOT_PASSWORD:-admin}
+      MARIADB_ROOT_PASSWORD: ${ERPNEXT_DB_ROOT_PASSWORD:-admin}
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  configurator:
+    <<: *erpnext-image
+    networks: [ls_net]
+    restart: "no"
+    entrypoint: [bash, -c]
+    command:
+      - >
+        ls -1 apps > sites/apps.txt;
+        bench set-config -g db_host $$DB_HOST;
+        bench set-config -gp db_port $$DB_PORT;
+        bench set-config -g redis_cache "redis://$$REDIS_CACHE";
+        bench set-config -g redis_queue "redis://$$REDIS_QUEUE";
+        bench set-config -g redis_socketio "redis://$$REDIS_QUEUE";
+        bench set-config -gp socketio_port $$SOCKETIO_PORT;
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      REDIS_CACHE: redis-cache:6379
+      REDIS_QUEUE: redis-queue:6379
+      SOCKETIO_PORT: "9000"
+    volumes: *erpnext-volumes
+
+  create-site:
+    <<: *erpnext-image
+    networks: [ls_net]
+    restart: "no"
+    volumes: *erpnext-volumes
+    entrypoint: [bash, -c]
+    command:
+      - >
+        wait-for-it -t 120 db:3306;
+        wait-for-it -t 120 redis-cache:6379;
+        wait-for-it -t 120 redis-queue:6379;
+        export start=`date +%s`;
+        until [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".db_host // empty"` ]] && \
+          [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_cache // empty"` ]] && \
+          [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_queue // empty"` ]];
+        do
+          echo "Waiting for sites/common_site_config.json to be created";
+          sleep 5;
+          if (( `date +%s`-start > 120 )); then
+            echo "could not find sites/common_site_config.json with required keys";
+            exit 1
+          fi
+        done;
+        echo "sites/common_site_config.json found";
+        if [ -d "sites/frontend" ]; then
+          echo "Site frontend already exists, skipping creation";
+        else
+          bench new-site --mariadb-user-host-login-scope='%' --admin-password=$$ADMIN_PASSWORD --db-root-username=root --db-root-password=$$DB_ROOT_PASSWORD --install-app erpnext --set-default frontend;
+        fi;
+    environment:
+      ADMIN_PASSWORD: ${ERPNEXT_ADMIN_PASSWORD:-admin}
+      DB_ROOT_PASSWORD: ${ERPNEXT_DB_ROOT_PASSWORD:-admin}
+
+  db:
+    image: mariadb:11.8
+    networks: [ls_net]
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 5s
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+    environment:
+      MYSQL_ROOT_PASSWORD: ${ERPNEXT_DB_ROOT_PASSWORD:-admin}
+      MARIADB_ROOT_PASSWORD: ${ERPNEXT_DB_ROOT_PASSWORD:-admin}
+    volumes:
+      - db-data:/var/lib/mysql
+
+  frontend:
+    <<: *erpnext-image
+    networks: [ls_net]
+    restart: on-failure
+    depends_on: [websocket, backend]
+    command: [nginx-entrypoint.sh]
+    environment:
+      BACKEND: backend:8000
+      FRAPPE_SITE_NAME_HEADER: frontend
+      SOCKETIO: websocket:9000
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: "off"
+      PROXY_READ_TIMEOUT: 120
+      CLIENT_MAX_BODY_SIZE: 50m
+    volumes: *erpnext-volumes
+    ports:
+      - "8080:8080"
+
+  queue-long:
+    <<: *erpnext-image
+    networks: [ls_net]
+    restart: on-failure
+    command: [bench, worker, --queue, "long,default,short"]
+    volumes: *erpnext-volumes
+    environment: *erpnext-redis-env
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  queue-short:
+    <<: *erpnext-image
+    networks: [ls_net]
+    restart: on-failure
+    command: [bench, worker, --queue, "short,default"]
+    volumes: *erpnext-volumes
+    environment: *erpnext-redis-env
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  redis-queue:
+    image: redis:6.2-alpine
+    networks: [ls_net]
+    restart: on-failure
+    volumes:
+      - redis-queue-data:/data
+
+  redis-cache:
+    image: redis:6.2-alpine
+    networks: [ls_net]
+    restart: on-failure
+
+  scheduler:
+    <<: *erpnext-image
+    networks: [ls_net]
+    restart: on-failure
+    command: [bench, schedule]
+    volumes: *erpnext-volumes
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  websocket:
+    <<: *erpnext-image
+    networks: [ls_net]
+    restart: on-failure
+    command: [node, /home/frappe/frappe-bench/apps/frappe/socketio.js]
+    environment: *erpnext-redis-env
+    volumes: *erpnext-volumes
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------- n8n
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-2.39.6}
+    networks: [ls_net]
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      GENERIC_TIMEZONE: ${TZ:-UTC}
+      TZ: ${TZ:-UTC}
+      N8N_SECURE_COOKIE: "false"            # local http only — never in production
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false" # workflows read base URLs / IDs from $env
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto   # LS-05 verifies Shopify webhook HMACs in a Code node
+      WEBHOOK_URL: ${N8N_PUBLIC_URL:-http://localhost:5678/}
+      # Non-secret config consumed by workflows via $env. Secrets live in n8n credentials.
+      ERPNEXT_BASE_URL: http://frontend:8080
+      AIRTABLE_BASE_ID: ${AIRTABLE_BASE_ID:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      ERPNEXT_COMPANY: ${ERPNEXT_COMPANY:-}
+      ERPNEXT_DEFAULT_WAREHOUSE: ${ERPNEXT_DEFAULT_WAREHOUSE:-}
+      SHOPIFY_STORE_DOMAIN: ${SHOPIFY_STORE_DOMAIN:-}
+      SHOPIFY_API_VERSION: ${SHOPIFY_API_VERSION:-2026-10}
+      SHOPIFY_CLIENT_ID: ${SHOPIFY_CLIENT_ID:-}
+      # Secret in env (not an n8n credential) because the HMAC check runs in a Code node,
+      # which can't read credentials. Production: an external secrets store.
+      SHOPIFY_CLIENT_SECRET: ${SHOPIFY_CLIENT_SECRET:-}
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+
+  # ---------------------------------------------------------------- Warehouse (Snowflake stand-in)
+  warehouse:
+    image: postgres:16-alpine
+    networks: [ls_net]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${WAREHOUSE_USER:-ls_admin}
+      POSTGRES_PASSWORD: ${WAREHOUSE_PASSWORD:-ls_admin_pw}
+      POSTGRES_DB: ${WAREHOUSE_DB:-ls_warehouse}
+    ports:
+      - "5433:5432"   # 5433 on the host to avoid clashing with a local Postgres
+    volumes:
+      - warehouse-data:/var/lib/postgresql/data
+      - ./sql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      retries: 10
+
+  adminer:
+    image: adminer:latest
+    networks: [ls_net]
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: warehouse
+
+  # ---------------------------------------------------------------- Optional profiles
+  # Public HTTPS URL for n8n so Airtable (cloud) can call the webhook.
+  # Find the URL with: docker compose logs tunnel | findstr trycloudflare
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: [tunnel]
+    networks: [ls_net]
+    command: tunnel --no-autoupdate --url http://n8n:5678
+    depends_on: [n8n]
+
+  # Python tooling without installing Python locally.
+  tools:
+    build: ./python
+    profiles: [tools]
+    networks: [ls_net]
+    working_dir: /repo/python
+    env_file: .env
+    environment:
+      ERPNEXT_BASE_URL: http://frontend:8080
+      WAREHOUSE_HOST: warehouse
+      WAREHOUSE_PORT: "5432"
+    volumes:
+      - .:/repo
+
+volumes:
+  db-data:
+  redis-queue-data:
+  sites:
+  logs:
+  n8n-data:
+  warehouse-data:
+
+networks:
+  ls_net:
+    driver: bridge

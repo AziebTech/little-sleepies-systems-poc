@@ -1,0 +1,28 @@
+version: 2
+
+sources:
+  - name: audit
+    description: Operational event logs written by n8n workflows and Python scripts.
+    schema: audit
+    loaded_at_field: created_at
+    # `dbt source freshness` fails the build if the sync pipeline goes quiet.
+    freshness:
+      warn_after: { count: 6, period: hour }
+      error_after: { count: 24, period: hour }
+    tables:
+      - name: sync_audit_logs
+        description: One row per sync attempt per record (append-only).
+        columns:
+          - name: log_id
+            tests: [unique, not_null]
+          - name: status
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ["success", "failed", "skipped"]
+          - name: source_system
+            tests:
+              - accepted_values:
+                  values: ["airtable", "erpnext"]
+      - name: workflow_errors
+        freshness: null   # errors are (hopefully) rare; silence is good here

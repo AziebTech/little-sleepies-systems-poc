@@ -1,0 +1,24 @@
+version: 2
+
+models:
+  - name: stg_sync_events
+    description: Typed, categorized sync events (demo rows excluded unless include_demo_data=true).
+    columns:
+      - name: log_id
+        tests: [unique, not_null]
+
+  - name: fct_sync_daily
+    description: Daily sync KPIs by direction.
+    columns:
+      - name: attempts
+        tests: [not_null]
+
+  - name: dim_sku_sync_status
+    description: Latest sync state per Airtable style. The support queue is `latest_status = 'failed'`.
+    columns:
+      - name: airtable_record_id
+        tests: [unique, not_null]
+      - name: latest_status
+        tests:
+          - accepted_values:
+              values: ["success", "failed", "skipped"]

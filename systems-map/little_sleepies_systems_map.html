@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+</head><body>
+<title>Little Sleepies Systems Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: one screen. Header with tabs; diagram left, detail panel right. Under 900px it stacks and the page scrolls. */
+:root{
+  --bg:#F7F8FA; --surface:#FFFFFF; --ink:#1B2130; --muted:#5B6274; --faint:#8A90A0; --line:#DADDE4;
+  --create-bg:#EEEDFE; --create-line:#534AB7; --create-ink:#3C3489;
+  --sell-bg:#E1F5EE; --sell-line:#0F6E56; --sell-ink:#085041;
+  --down-bg:#F1EFE8; --down-line:#A8A59B; --down-ink:#3A3934;
+  --sys-bg:#E8EFF9; --sys-line:#2F5E9E; --sys-ink:#1D3F6E;
+  --warn-bg:#FFF3DC; --warn-ink:#80500A; --ok-ink:#0F6E56;
+  --badge-bg:#1B2130; --badge-ink:#FFFFFF; --arrow:#7D8292; --hi:#2F5E9E;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#12151C; --surface:#1A1E27; --ink:#E7E9EE; --muted:#A3A9B7; --faint:#7C8293; --line:#2D3340;
+  --create-bg:#262347; --create-line:#9D95F0; --create-ink:#D4D0FF;
+  --sell-bg:#12352C; --sell-line:#4CC3A0; --sell-ink:#BDEEDD;
+  --down-bg:#2A2925; --down-line:#77746B; --down-ink:#E4E1D8;
+  --sys-bg:#1A2B44; --sys-line:#78A6E6; --sys-ink:#CFE0F8;
+  --warn-bg:#3A2C12; --warn-ink:#F2C879; --ok-ink:#6FD3B2;
+  --badge-bg:#E7E9EE; --badge-ink:#12151C; --arrow:#8A90A0; --hi:#8DB6F0; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#12151C; --surface:#1A1E27; --ink:#E7E9EE; --muted:#A3A9B7; --faint:#7C8293; --line:#2D3340;
+  --create-bg:#262347; --create-line:#9D95F0; --create-ink:#D4D0FF;
+  --sell-bg:#12352C; --sell-line:#4CC3A0; --sell-ink:#BDEEDD;
+  --down-bg:#2A2925; --down-line:#77746B; --down-ink:#E4E1D8;
+  --sys-bg:#1A2B44; --sys-line:#78A6E6; --sys-ink:#CFE0F8;
+  --warn-bg:#3A2C12; --warn-ink:#F2C879; --ok-ink:#6FD3B2;
+  --badge-bg:#E7E9EE; --badge-ink:#12151C; --arrow:#8A90A0; --hi:#8DB6F0; color-scheme:dark}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14.5px;line-height:1.5;margin:0}
+.app{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr)}
+h1,h2,h3{margin:0;line-height:1.25;text-wrap:balance}
+p{margin:0}
+code,.mono{font-family:var(--mono);font-size:.88em}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--hi);outline-offset:2px}
+
+/* Header */
+.top{display:flex;align-items:center;gap:12px 20px;flex-wrap:wrap;padding-inline:20px;padding-block:10px;border-bottom:1px solid var(--line);background:var(--surface)}
+.top h1{font-size:17px;font-weight:700;letter-spacing:-.005em;white-space:nowrap}
+.tabs{display:flex;gap:4px;flex-wrap:wrap}
+.tab{border:1px solid transparent;background:none;padding:5px 12px;border-radius:7px;cursor:pointer;font-size:13.5px;color:var(--muted)}
+.tab:hover{background:var(--bg)}
+.tab[aria-selected="true"]{background:var(--sys-bg);color:var(--sys-ink);border-color:var(--sys-line);font-weight:600}
+.tab kbd{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-left:6px}
+.keys{margin-left:auto;font-size:12px;color:var(--faint);display:flex;gap:12px;flex-wrap:wrap}
+.keys kbd{font-family:var(--mono);font-size:11px;padding:1px 5px;border:1px solid var(--line);border-radius:4px;color:var(--muted);background:var(--bg)}
+
+/* Main split */
+.main{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(360px,1fr);min-height:0}
+.stage{min-width:0;min-height:0;padding:14px 10px 10px 16px;display:flex;flex-direction:column;gap:8px}
+.stage svg{flex:1;min-height:0;width:100%;height:100%}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);padding-left:6px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{display:inline-block;width:11px;height:11px;border-radius:3px;border:1px solid}
+.sw.c{background:var(--create-bg);border-color:var(--create-line)}
+.sw.s{background:var(--sell-bg);border-color:var(--sell-line)}
+.sw.d{background:var(--down-bg);border-color:var(--down-line)}
+.sw.y{background:var(--sys-bg);border-color:var(--sys-line)}
+.sw.p{border:1.5px dashed var(--muted)}
+
+/* SVG */
+svg text{font-family:var(--sans)}
+.b-c{fill:var(--create-bg);stroke:var(--create-line)} .t-c{fill:var(--create-ink)}
+.b-s{fill:var(--sell-bg);stroke:var(--sell-line)} .t-s{fill:var(--sell-ink)}
+.b-d{fill:var(--down-bg);stroke:var(--down-line)} .t-d{fill:var(--down-ink)}
+.b-y{fill:var(--sys-bg);stroke:var(--sys-line)} .t-y{fill:var(--sys-ink)}
+.b-p{stroke-dasharray:5 4}
+.box{stroke-width:1}
+.ttl{font-size:14px;font-weight:600}
+.tool{font-size:12.5px}
+.own{font-size:11.5px;fill:var(--muted)}
+.zone{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;fill:var(--faint)}
+.arr{stroke:var(--arrow);stroke-width:1.6;fill:none}
+.arrhead{fill:none;stroke:var(--arrow);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.arrhead-hi{fill:none;stroke:var(--hi);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.badge{cursor:pointer}
+.badge circle{fill:var(--badge-bg)}
+.badge text{fill:var(--badge-ink);font-size:11.5px;font-weight:600;pointer-events:none}
+.badge:hover circle{fill:var(--hi)}
+.node{cursor:pointer}
+.node:hover .box{stroke-width:2}
+.chip-r{fill:var(--surface);stroke:var(--sys-line);stroke-width:.8}
+.chip-t{font-size:11.5px;fill:var(--sys-ink)}
+.cap{font-size:11.5px;fill:var(--muted)}
+.node,.fl{transition:opacity .15s}
+svg.sel .node:not(.on),svg.sel .fl:not(.on){opacity:.22}
+svg.sel .node.on .box{stroke-width:2.2}
+svg.sel .arr.on{stroke:var(--hi);stroke-width:2.6}
+svg.sel .badge.on circle{fill:var(--hi)}
+@media (prefers-reduced-motion:reduce){.node,.fl{transition:none}}
+
+/* Panel */
+.panel{min-width:0;min-height:0;border-left:1px solid var(--line);background:var(--surface);display:grid;grid-template-rows:minmax(0,1fr) auto;container-type:inline-size}
+.pbody{overflow:auto;padding:20px 22px;display:flex;flex-direction:column;gap:14px}
+.pfoot{border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:8px;align-items:center}
+.pfoot .where{font-size:12.5px;color:var(--faint);margin-right:auto}
+.nb{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:5px 12px;cursor:pointer;font-size:13px}
+.nb:hover{border-color:var(--hi)}
+.nb[disabled]{opacity:.4;cursor:default}
+.ph{display:flex;gap:12px;align-items:flex-start}
+.ph .t{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}
+.ph h2{font-size:18px;font-weight:600}
+.num{flex:none;width:30px;height:30px;border-radius:50%;background:var(--badge-bg);color:var(--badge-ink);display:grid;place-items:center;font-weight:600;font-size:14px}
+.path{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.pill{font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted);white-space:nowrap;align-self:flex-start}
+.pill.inf{border-color:var(--warn-ink);color:var(--warn-ink)}
+.pill.pro{border-style:dashed}
+.lbl{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:500;margin-bottom:5px;display:block}
+.lbl.w{color:var(--warn-ink)} .lbl.k{color:var(--hi)} .lbl.o{color:var(--ok-ink)} .lbl.g{color:var(--faint)}
+.duo{display:grid;grid-template-columns:1fr;gap:14px}
+@container (min-width:440px){.duo{grid-template-columns:1fr 1fr}}
+.pbody ul,.pbody ol{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.after{background:var(--warn-bg);border-radius:8px;padding:10px 12px;font-size:13.5px}
+.after .lbl{color:var(--warn-ink)}
+.guard{border-top:1px solid var(--line);padding-top:12px}
+.guard ul{list-style:none;padding:0;flex-direction:row;flex-wrap:wrap;gap:6px}
+.guard li{font-size:13px;padding:3px 9px;border-radius:6px;background:var(--bg);border:1px solid var(--line)}
+.guard li.poc{background:var(--sys-bg);border-color:var(--sys-line);color:var(--sys-ink)}
+.guard li.poc::after{content:"POC";font-family:var(--mono);font-size:10px;margin-left:6px;opacity:.8}
+.ask{border-left:3px solid var(--hi);padding:8px 12px;background:var(--sys-bg);color:var(--sys-ink);border-radius:0 8px 8px 0}
+.ask .lbl{color:var(--sys-ink)}
+.flist{display:grid;grid-template-columns:1fr;gap:6px}
+@container (min-width:520px){.flist{grid-template-columns:1fr 1fr}}
+.fbtn{display:flex;gap:10px;align-items:center;text-align:left;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:8px 10px;cursor:pointer}
+.fbtn:hover{border-color:var(--hi)}
+.fbtn .num{width:24px;height:24px;font-size:12px}
+.fbtn span:last-child{font-size:13.5px;line-height:1.3}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.sg{display:flex;flex-direction:column;gap:8px}
+.sg div{display:grid;grid-template-columns:150px 1fr;gap:10px;font-size:13.5px;border-top:1px solid var(--line);padding-top:8px}
+.sg b{font-weight:600}
+.muted{color:var(--muted)}
+.intro{color:var(--muted);font-size:13.5px}
+ol.steps{padding-left:22px;gap:9px}
+ol.steps li::marker{font-family:var(--mono);color:var(--faint)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+td,th{padding:8px 6px;border-top:1px solid var(--line);vertical-align:top;text-align:left}
+th{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:500;border-top:0}
+.err td:first-child{font-family:var(--mono);font-size:12px;white-space:nowrap}
+.err td:nth-child(2){font-weight:600;white-space:nowrap}
+.err td:last-child,.ownt td:last-child{color:var(--muted)}
+.ownt td:nth-child(2){font-weight:600}
+.foot-note{font-size:12px;color:var(--faint)}
+
+@media (max-height:780px) and (min-width:901px){.pbody{padding:14px 18px;gap:10px;font-size:13.5px}.ph h2{font-size:16.5px}.after{font-size:13px}.guard li{font-size:12.5px}}
+@media (max-width:900px){
+  .app{height:auto;display:block}
+  html,body{height:auto}
+  .main{grid-template-columns:1fr}
+  .stage{padding:12px 16px;overflow-x:auto}
+  .stage svg{min-width:640px;height:auto}
+  .panel{border-left:0;border-top:1px solid var(--line)}
+  .keys{display:none}
+  .top{padding-inline:16px}
+}
+</style>
+
+<div class="app">
+<header class="top">
+  <h1>Little Sleepies Systems Map</h1>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button class="tab" role="tab" id="tab-flows" data-tab="flows" aria-selected="true">Flows</button>
+    <button class="tab" role="tab" id="tab-method" data-tab="method" aria-selected="false">Method<kbd>M</kbd></button>
+    <button class="tab" role="tab" id="tab-errors" data-tab="errors" aria-selected="false">Errors<kbd>E</kbd></button>
+    <button class="tab" role="tab" id="tab-owns" data-tab="owns" aria-selected="false">Ownership<kbd>O</kbd></button>
+  </nav>
+  <div class="keys" aria-hidden="true"><span><kbd>1</kbd>–<kbd>9</kbd> flows</span><span><kbd>←</kbd><kbd>→</kbd> step</span><span><kbd>Esc</kbd> overview</span></div>
+</header>
+
+<main class="main">
+<section class="stage" aria-label="Architecture diagram">
+<svg id="dg" viewBox="0 0 1000 660" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="dg-t">
+<title id="dg-t">Little Sleepies systems: nine numbered data flows between departments, an integration layer, and a proposed people and access lane. Select a number or a box for details.</title>
+<defs>
+  <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrhead" d="M2 1L8 5L2 9"/></marker>
+</defs>
+<rect id="bg" x="0" y="0" width="1000" height="660" fill="transparent"/>
+<text class="zone" x="30" y="44">CREATE</text>
+<text class="zone" x="30" y="200">SELL · FULFILL · REPORT</text>
+<text class="zone" x="30" y="560">PEOPLE &amp; ACCESS · PROPOSED</text>
+
+<g class="node" data-b="design" tabindex="0" role="button" aria-label="Design and Product"><rect class="box b-c" x="30" y="56" width="210" height="84" rx="8"/>
+<text class="ttl t-c" x="44" y="82">Design &amp; Product</text><text class="tool t-c" x="44" y="102">Adobe · PLM?</text><text class="own" x="44" y="124">Owns: artwork, print approvals*</text></g>
+
+<g class="node" data-b="production" tabindex="0" role="button" aria-label="Production and Compliance"><rect class="box b-c" x="300" y="56" width="230" height="84" rx="8"/>
+<text class="ttl t-c" x="314" y="82">Production &amp; Compliance</text><text class="tool t-c" x="314" y="102">Airtable · PLM?</text><text class="own" x="314" y="124">Owns: style specs, test status*</text></g>
+
+<g class="node" data-b="photo" tabindex="0" role="button" aria-label="Photography"><rect class="box b-c" x="590" y="56" width="200" height="84" rx="8"/>
+<text class="ttl t-c" x="604" y="82">Photography</text><text class="tool t-c" x="604" y="102">Airtable · DAM?</text><text class="own" x="604" y="124">Owns: product images</text></g>
+
+<g class="node" data-b="analytics" tabindex="0" role="button" aria-label="Analytics"><rect class="box b-d" x="30" y="210" width="210" height="84" rx="8"/>
+<text class="ttl t-d" x="44" y="236">Analytics</text><text class="tool t-d" x="44" y="256">Snowflake · dbt</text><text class="own" x="44" y="278">Owns: nothing (reporting copy)</text></g>
+
+<g class="node" data-b="netsuite" tabindex="0" role="button" aria-label="Finance and Operations, NetSuite"><rect class="box b-s" x="300" y="210" width="230" height="84" rx="8"/>
+<text class="ttl t-s" x="314" y="236">Finance &amp; Operations</text><text class="tool t-s" x="314" y="256">NetSuite</text><text class="own" x="314" y="278">Owns: item master, ledger, stock book</text></g>
+
+<g class="node" data-b="shopify" tabindex="0" role="button" aria-label="eCommerce, Shopify Plus"><rect class="box b-s" x="590" y="210" width="200" height="84" rx="8"/>
+<text class="ttl t-s" x="604" y="236">eCommerce</text><text class="tool t-s" x="604" y="256">Shopify Plus</text><text class="own" x="604" y="278">Owns: checkout orders, listings</text></g>
+
+<g class="node" data-b="lifecycle" tabindex="0" role="button" aria-label="Lifecycle and Ads"><rect class="box b-d" x="850" y="180" width="130" height="76" rx="8"/>
+<text class="ttl t-d" x="862" y="204">Lifecycle &amp; Ads</text><text class="tool t-d" x="862" y="223">Klaviyo · Attentive</text><text class="own" x="862" y="243">Owns: consent</text></g>
+
+<g class="node" data-b="support" tabindex="0" role="button" aria-label="Customer Support, Gorgias"><rect class="box b-d" x="850" y="270" width="130" height="76" rx="8"/>
+<text class="ttl t-d" x="862" y="294">Support</text><text class="tool t-d" x="862" y="313">Gorgias</text><text class="own" x="862" y="333">Owns: tickets</text></g>
+
+<g class="node" data-b="tpl" tabindex="0" role="button" aria-label="3PL warehouse"><rect class="box b-s" x="300" y="342" width="230" height="72" rx="8"/>
+<text class="ttl t-s" x="314" y="366">3PL warehouse</text><text class="tool t-s" x="314" y="385">Provider?</text><text class="own" x="314" y="403">Owns: physical stock, shipments</text></g>
+
+<g class="node" data-b="integration" tabindex="0" role="button" aria-label="Integration layer"><rect class="box b-y" x="30" y="444" width="950" height="84" rx="8"/>
+<text class="ttl t-y" x="44" y="469">Integration layer (Systems team)</text>
+<text class="tool t-y" x="262" y="469">n8n · connector? · Shopify and NetSuite APIs </text>
+<text class="cap" x="966" y="469" text-anchor="end">Flows 2, 4 and 5 pass through here</text>
+<rect class="chip-r" x="44" y="486" width="112" height="26" rx="13"/><text class="chip-t" x="100" y="503" text-anchor="middle">Signature check</text>
+<rect class="chip-r" x="164" y="486" width="126" height="26" rx="13"/><text class="chip-t" x="227" y="503" text-anchor="middle">Upsert by ext. ID</text>
+<rect class="chip-r" x="298" y="486" width="120" height="26" rx="13"/><text class="chip-t" x="358" y="503" text-anchor="middle">Hold, don't guess</text>
+<rect class="chip-r" x="426" y="486" width="84" height="26" rx="13"/><text class="chip-t" x="468" y="503" text-anchor="middle">Audit log</text>
+<rect class="chip-r" x="518" y="486" width="112" height="26" rx="13"/><text class="chip-t" x="574" y="503" text-anchor="middle">Error workflow</text>
+<rect class="chip-r" x="638" y="486" width="118" height="26" rx="13"/><text class="chip-t" x="697" y="503" text-anchor="middle">Safety-net poll</text>
+<rect class="chip-r" x="764" y="486" width="136" height="26" rx="13"/><text class="chip-t" x="832" y="503" text-anchor="middle">Freshness monitor</text></g>
+
+<g class="node" data-b="people" tabindex="0" role="button" aria-label="People, BambooHR"><rect class="box b-d b-p" x="30" y="572" width="210" height="72" rx="8"/>
+<text class="ttl t-d" x="44" y="596">People</text><text class="tool t-d" x="44" y="615">BambooHR</text><text class="own" x="44" y="634">Owns: employee record</text></g>
+
+<g class="node" data-b="okta" tabindex="0" role="button" aria-label="Identity, Okta"><rect class="box b-y b-p" x="330" y="572" width="230" height="72" rx="8"/>
+<text class="ttl t-y" x="344" y="596">Identity</text><text class="tool t-y" x="344" y="615">Okta</text><text class="own" x="344" y="634">Owns: identity, app access</text></g>
+
+<g class="node" data-b="apps" tabindex="0" role="button" aria-label="Apps and Macs"><rect class="box b-y b-p" x="650" y="572" width="330" height="72" rx="8"/>
+<text class="ttl t-y" x="664" y="596">Apps and Macs</text><text class="tool t-y" x="664" y="615">Workspace?, NetSuite, Shopify, Airtable · Jamf</text><text class="own" x="664" y="634">Owns: device state (Jamf)</text></g>
+
+<line class="arr fl" data-f="1" x1="240" y1="98" x2="297" y2="98" marker-end="url(#ah)"/>
+<line class="arr fl" data-f="2" x1="415" y1="140" x2="415" y2="207" marker-end="url(#ah)"/>
+<line class="arr fl" data-f="3" x1="690" y1="140" x2="690" y2="207" marker-end="url(#ah)"/>
+<line class="arr fl" data-f="4" x1="590" y1="236" x2="533" y2="236" marker-end="url(#ah)"/>
+<line class="arr fl" data-f="5" x1="530" y1="270" x2="587" y2="270" marker-end="url(#ah)"/>
+<line class="arr fl" data-f="6" x1="300" y1="252" x2="243" y2="252" marker-end="url(#ah)"/>
+<line class="arr fl" data-f="4" x1="390" y1="294" x2="390" y2="339" marker-end="url(#ah)"/>
+<line class="arr fl" data-f="5" x1="440" y1="342" x2="440" y2="297" marker-end="url(#ah)"/>
+<line class="arr fl" data-f="7" x1="790" y1="222" x2="847" y2="222" marker-end="url(#ah)"/>
+<line class="arr fl" data-f="8" x1="793" y1="284" x2="847" y2="284" marker-start="url(#ah)" marker-end="url(#ah)"/>
+<line class="arr fl" data-f="9" x1="240" y1="608" x2="327" y2="608" marker-end="url(#ah)"/>
+<line class="arr fl" data-f="9" x1="560" y1="608" x2="647" y2="608" marker-end="url(#ah)"/>
+
+<g class="badge fl" data-f="1" tabindex="0" role="button" aria-label="Flow 1"><circle cx="268" cy="98" r="11"/><text x="268" y="102" text-anchor="middle">1</text></g>
+<g class="badge fl" data-f="2" tabindex="0" role="button" aria-label="Flow 2"><circle cx="415" cy="174" r="11"/><text x="415" y="178" text-anchor="middle">2</text></g>
+<g class="badge fl" data-f="3" tabindex="0" role="button" aria-label="Flow 3"><circle cx="690" cy="174" r="11"/><text x="690" y="178" text-anchor="middle">3</text></g>
+<g class="badge fl" data-f="4" tabindex="0" role="button" aria-label="Flow 4"><circle cx="560" cy="236" r="11"/><text x="560" y="240" text-anchor="middle">4</text></g>
+<g class="badge fl" data-f="5" tabindex="0" role="button" aria-label="Flow 5"><circle cx="560" cy="270" r="11"/><text x="560" y="274" text-anchor="middle">5</text></g>
+<g class="badge fl" data-f="6" tabindex="0" role="button" aria-label="Flow 6"><circle cx="270" cy="252" r="11"/><text x="270" y="256" text-anchor="middle">6</text></g>
+<g class="badge fl" data-f="4" tabindex="-1" role="button" aria-label="Flow 4, to the 3PL"><circle cx="372" cy="318" r="11"/><text x="372" y="322" text-anchor="middle">4</text></g>
+<g class="badge fl" data-f="5" tabindex="-1" role="button" aria-label="Flow 5, from the 3PL"><circle cx="458" cy="318" r="11"/><text x="458" y="322" text-anchor="middle">5</text></g>
+<g class="badge fl" data-f="7" tabindex="0" role="button" aria-label="Flow 7"><circle cx="820" cy="222" r="11"/><text x="820" y="226" text-anchor="middle">7</text></g>
+<g class="badge fl" data-f="8" tabindex="0" role="button" aria-label="Flow 8"><circle cx="820" cy="284" r="11"/><text x="820" y="288" text-anchor="middle">8</text></g>
+<g class="badge fl" data-f="9" tabindex="0" role="button" aria-label="Flow 9"><circle cx="284" cy="608" r="11"/><text x="284" y="612" text-anchor="middle">9</text></g>
+<g class="badge fl" data-f="9" tabindex="-1" role="button" aria-label="Flow 9, to apps"><circle cx="604" cy="608" r="11"/><text x="604" y="612" text-anchor="middle">9</text></g>
+</svg>
+<div class="legend">
+  <span><i class="sw c"></i>Create</span><span><i class="sw s"></i>Sell and fulfill</span><span><i class="sw d"></i>Market, support, report</span><span><i class="sw y"></i>Systems team</span><span><i class="sw p"></i>Proposed</span><span><b class="mono">?</b> not confirmed</span><span><b class="mono">*</b> inferred</span>
+</div>
+</section>
+
+<aside class="panel" aria-live="polite">
+  <div class="pbody" id="pbody"></div>
+  <div class="pfoot">
+    <span class="where" id="where"></span>
+    <button class="nb" id="prev" type="button">← Prev</button>
+    <button class="nb" id="next" type="button">Next →</button>
+  </div>
+</aside>
+</main>
+</div>
+
+<script>
+(function(){
+const FLOWS = [
+ {n:1,title:"Approved prints to production",path:"Design & Product (Adobe, PLM?) → Production & Compliance (Airtable)",pill:["inf","inferred"],boxes:["design","production"],
+  watch:["Print approved in one tool but not the other","Wrong artwork version handed to production","Duplicate print records, so styles link to different copies"],
+  check:["Airtable automation run history for failed runs","Required fields filled: print name, colorway, approval status","Linked records point to one print, not copies"],
+  confirm:"One print record, status Approved, linked to every style that uses it.",
+  guard:[["Unique print ID"],["Only approvers can set Approved"],["Airtable interface instead of raw grid edits"]]},
+ {n:2,title:"Approved styles become NetSuite SKUs",path:"Airtable / PLM → n8n or connector → NetSuite matrix item (parent + one child per size)",boxes:["production","integration","netsuite"],
+  watch:["A child item fails because its size value isn't in NetSuite's size list","Duplicate item name or external ID","Missing required fields (tax schedule, income and asset accounts)","Integration role missing a permission","Concurrency errors when a whole drop is created at once"],
+  check:["The exact NetSuite error in the n8n execution or connector log","Whether the external ID already exists in NetSuite","SKU format: S-format, size codes per product line, legacy <code>LS-</code> SKUs","Integration role permissions"],
+  confirm:"Parent and every size child exist and are active, with price, carrying the same SKU the storefront uses.",
+  guard:[["Upsert by external ID",1],["Validate SKU format before the call",1],["Block styles without passed testing*"],["Launch readiness check (designed, not built)"]]},
+ {n:3,title:"Product photos to Shopify listings",path:"Photography (Airtable, DAM?) → Shopify product media",boxes:["photo","shopify"],
+  watch:["Airtable attachment links expire after a few hours, so a delayed job hands Shopify a dead link","Shopify processes media after the call returns, so an upload can \"succeed\" and later show Failed","Image attached to the wrong colorway or variant","File over Shopify's size limits"],
+  check:["Media status on the product in Shopify","Whether the source link still opens","Image-to-variant mapping, keyed on SKU, not file name"],
+  confirm:"Each colorway shows its own images on the live product page.",
+  guard:[["Fetch a fresh link at upload time"],["Re-check media status after upload"]]},
+ {n:4,title:"Orders from Shopify to NetSuite",path:"Shopify order webhook → n8n or connector → NetSuite sales order → 3PL",boxes:["shopify","integration","netsuite","tpl"],
+  watch:["Unknown or legacy SKU on a line","Bundles with no SKU, which hold the whole order","Tax, shipping, discounts or gift cards not mapped, so totals drift","Customer matching creates duplicate customers","A retried webhook creates a second sales order","A missed webhook means the order never arrives","Signature failures on every order (rotated secret)"],
+  check:["Find the order by Shopify order ID in the audit log or connector queue","Read the exact error","Each line's SKU exists and is active in NetSuite","Compare totals line by line: items, tax, shipping, discount"],
+  confirm:"Exactly one sales order per Shopify order, same total, with the Shopify order ID stored on it.",
+  after:"Refunds, returns, exchanges, edits and partial cancels are where out-of-the-box connectors fall short. A refund in Shopify or Gorgias needs a matching credit memo or cash refund in NetSuite. To confirm: which the connector handles and which are done by hand.",
+  guard:[["Signature check on the raw body",1],["Hold, don't guess",1],["Upsert by order ID",1],["Webhook plus safety-net poll",1],["Every run in the audit log",1]]},
+ {n:5,title:"Stock and tracking back to Shopify",path:"3PL → NetSuite (item fulfillment, inventory) → Shopify (fulfillment, inventory by location)",boxes:["tpl","netsuite","integration","shopify"],
+  watch:["Overselling in a drop because inventory syncs on a schedule","A Shopify location not mapped to its NetSuite location","3PL confirmations arrive late, so NetSuite is stale","Tracking missing, or split shipments only partly posted","Shipping email not sent, or sent twice"],
+  check:["Start upstream: did the 3PL confirmation reach NetSuite?","NetSuite item fulfillment: lines, tracking, carrier","Shopify fulfillment and inventory level for that location","When the sync last ran, and how often it runs"],
+  confirm:"Shopify shows Fulfilled or Partially fulfilled with tracking; available stock matches NetSuite.",
+  guard:[["Daily per-SKU stock reconciliation"],["Safety buffer during drops"],["Alert when a scheduled sync goes quiet",1]]},
+ {n:6,title:"NetSuite data to Snowflake",path:"NetSuite → extract tool? → Snowflake raw tables → dbt models → dashboards",boxes:["netsuite","analytics"],
+  watch:["Stale dashboards because the extract paused or its login expired","A renamed or deleted NetSuite custom field breaks a dbt model","Records deleted in NetSuite still counted in Snowflake","Time zone differences shift daily totals"],
+  check:["The extract tool's last successful run","<code>dbt source freshness</code>, then <code>dbt test</code>","One day's total against a NetSuite saved search for the same day"],
+  confirm:"Data is inside the agreed freshness window and totals reconcile to NetSuite.",
+  guard:[["Tell Analytics before changing a NetSuite custom field"],["Freshness tests in dbt"]]},
+ {n:7,title:"Customer data to Klaviyo and Attentive",path:"Shopify → native apps → Klaviyo (email), Attentive (SMS)",pill:["","Lifecycle owns · Systems supports"],boxes:["shopify","lifecycle"],
+  watch:["App disconnected or lost a permission, so events stop","Consent not syncing, which is a compliance risk","Duplicate profiles (email-only and phone-only)"],
+  check:["App status in Shopify and in each tool's integration settings","Place a test order and watch that profile's activity","Consent fields on a known profile"],
+  confirm:"The test order shows as a Placed Order event on the right profile, with the right consent.",
+  guard:[["Watch daily event volume; a drop to zero is the alert"]]},
+ {n:8,title:"Order details to Gorgias, and actions back",path:"Shopify ⇄ Gorgias (sidebar reads orders; agents can refund or cancel)",boxes:["shopify","support"],
+  watch:["No orders in the sidebar because the customer wrote from a different email","Integration disconnected","A refund or cancel done in Gorgias changes Shopify but never reaches NetSuite"],
+  check:["Gorgias Shopify integration status","Ticket email against the Shopify customer email","Trace one Gorgias refund: Gorgias → Shopify → NetSuite"],
+  confirm:"A test customer's ticket shows orders and tracking; a test refund appears in NetSuite.",
+  guard:[["Include Gorgias actions in the refund reconciliation (flow 4)"]]},
+ {n:9,title:"New hires, movers and leavers",path:"BambooHR → Okta (profile, groups) → apps · Apple Business Manager → Jamf (Macs)",pill:["pro","proposed"],boxes:["people","okta","apps"],
+  watch:["Account not ready on day one: Okta's import from BambooHR hadn't run, or the start date is wrong","Wrong apps because department or title don't match a group rule","Mac doesn't enroll: serial not assigned to Jamf in Apple Business Manager, or outside the enrollment scope","A leaver keeps access"],
+  check:["Okta import log and the user's profile attributes","Which group rules matched; which apps were assigned","Device assignment in Apple Business Manager, then Jamf enrollment"],
+  confirm:"A test hire gets the right apps on the start date; a terminated test user is deactivated everywhere.",
+  guard:[["Drive deactivation from BambooHR status, not tickets"],["Scheduled access review"]]}
+];
+
+const BOXES = {
+ design:{title:"Design & Product",tools:"Adobe · PLM (name not confirmed)",owns:"Artwork and print approvals*",ask:"Is there a PLM, or do approvals live in Airtable?"},
+ production:{title:"Production & Compliance",tools:"Airtable · PLM (name not confirmed)",owns:"Style specs, lab dips and strike-offs, testing status and certificates*",ask:"Is the Airtable base linked to the NetSuite item master, or kept separately?"},
+ photo:{title:"Photography",tools:"Airtable · DAM (name not confirmed)",owns:"Product images",ask:"Where do final images live, and how do they get onto Shopify?"},
+ analytics:{title:"Analytics",tools:"Snowflake · dbt",owns:"Nothing. Snowflake is a reporting copy of NetSuite and Shopify.",ask:"What loads NetSuite into Snowflake, and who owns the dbt models?"},
+ netsuite:{title:"Finance & Operations",tools:"NetSuite",owns:"Item master (SKU, size matrix, cost), the ledger, and the inventory book",ask:"Who owns the item master today: Merchandising, Operations or Systems?"},
+ shopify:{title:"eCommerce",tools:"Shopify Plus",owns:"Orders at checkout, listings and product content",ask:"How do bundles reach NetSuite today, given they have no SKUs?"},
+ lifecycle:{title:"Lifecycle & Ads",tools:"Klaviyo (email) · Attentive (SMS)",owns:"Email and SMS consent",ask:"Does Systems own the Klaviyo and Attentive integrations, or does Lifecycle?"},
+ support:{title:"Customer Support",tools:"Gorgias",owns:"Tickets",ask:"Can agents refund in Gorgias, and does that refund reach NetSuite?"},
+ tpl:{title:"3PL warehouse",tools:"Provider not confirmed",owns:"Physical stock and shipments",ask:"Does the 3PL talk to NetSuite by API, EDI or files, and how often?"},
+ integration:{title:"Integration layer",tools:"n8n · connector (not confirmed) · Shopify and NetSuite APIs",owns:"No business data. It moves data and records every run.",ask:"Which connector moves orders today, and what breaks most often?",safeguards:true},
+ people:{title:"People",tools:"BambooHR",owns:"Employee record (start date, department, title, manager, status)",ask:"How does a new hire get accounts and a laptop today?"},
+ okta:{title:"Identity",tools:"Okta",owns:"Identity and app access",ask:"Is BambooHR feeding Okta today, or are accounts created by hand?"},
+ apps:{title:"Apps and Macs",tools:"Google Workspace?, NetSuite, Shopify, Airtable · Jamf",owns:"Device state (Jamf)",ask:"Are Macs enrolled automatically through Apple Business Manager?"}
+};
+
+const SAFEGUARDS = [
+ ["Signature check","Verify Shopify's HMAC on the raw body; anything unsigned is discarded before any ERP write. Tested with an unsigned request."],
+ ["Upsert by external ID","A rerun updates the existing record instead of creating a duplicate (NetSuite external ID, Shopify order ID)."],
+ ["Hold, don't guess","An unknown SKU or a bundle puts the order on hold instead of guessing an item."],
+ ["Audit log","Every run is recorded with its ID, status and error. It's the first place to look."],
+ ["Error workflow","One workflow catches failures from all the others and sorts them."],
+ ["Safety-net poll","A scheduled poll picks up any order whose webhook never arrived."],
+ ["Freshness monitor","LS-03 alerts on silence: more than 24 hours since a success, an error rate over 10%, or no events in 24 hours."]
+];
+
+const flowsFor = id => FLOWS.filter(f => f.boxes.includes(id)).map(f => f.n);
+
+const svg = document.getElementById('dg');
+const body = document.getElementById('pbody');
+const where = document.getElementById('where');
+const prev = document.getElementById('prev');
+const next = document.getElementById('next');
+let state = {tab:'flows', flow:null, box:null};
+
+function highlight(){
+  const sel = state.tab==='flows' && (state.flow||state.box);
+  svg.classList.toggle('sel', !!sel);
+  let flows=[], boxes=[];
+  if(state.flow){ flows=[state.flow]; boxes=FLOWS[state.flow-1].boxes; }
+  else if(state.box){ flows=flowsFor(state.box); boxes=[state.box]; }
+  svg.querySelectorAll('.fl').forEach(el=>el.classList.toggle('on', flows.includes(+el.dataset.f)));
+  svg.querySelectorAll('.node').forEach(el=>el.classList.toggle('on', boxes.includes(el.dataset.b)));
+  svg.querySelectorAll('.arr').forEach(el=>{
+    el.setAttribute('marker-end', el.classList.contains('on') && sel ? 'url(#ah-hi)' : 'url(#ah)');
+    if(el.hasAttribute('marker-start')) el.setAttribute('marker-start', el.classList.contains('on') && sel ? 'url(#ah-hi)' : 'url(#ah)');
+  });
+}
+
+const li = a => a.map(x=>`<li>${x}</li>`).join('');
+
+function renderFlow(f){
+  const pill = f.pill ? `<span class="pill ${f.pill[0]}">${f.pill[1]}</span>` : '';
+  return `<div class="ph"><div class="num">${f.n}</div><div class="t"><h2>${f.title}</h2><p class="path">${f.path}</p></div>${pill}</div>
+  <div class="duo"><div><span class="lbl w">Watch for</span><ul>${li(f.watch)}</ul></div>
+  <div><span class="lbl k">Check, in order</span><ol>${li(f.check)}</ol></div></div>
+  <div><span class="lbl o">Confirm</span><p>${f.confirm}</p></div>
+  ${f.after?`<div class="after"><span class="lbl">After the sale</span>${f.after}</div>`:''}
+  <div class="guard"><span class="lbl g">Guardrails</span><ul>${f.guard.map(g=>`<li class="${g[1]?'poc':''}">${g[0]}</li>`).join('')}</ul></div>`;
+}
+
+function renderBox(id){
+  const b = BOXES[id], fl = flowsFor(id);
+  let h = `<div class="ph"><div class="t"><h2>${b.title}</h2><p class="path">${b.tools}</p></div></div>
+  <div><span class="lbl o">Owns</span><p>${b.owns}</p></div>
+  <div><span class="lbl k">Flows</span><div class="flist">${fl.map(n=>`<button class="fbtn" type="button" data-go="${n}"><span class="num">${n}</span><span>${FLOWS[n-1].title}</span></button>`).join('')}</div></div>`;
+  h += `<div class="ask"><span class="lbl">Open question</span>${b.ask}</div>`;
+  if(b.safeguards) h += `<div class="sg"><span class="lbl g">Safeguards (all in this POC)</span>${SAFEGUARDS.map(s=>`<div><b>${s[0]}</b><span class="muted">${s[1]}</span></div>`).join('')}</div>`;
+  return h;
+}
+
+function renderOverview(){
+  return `<div class="ph"><div class="t"><h2>Nine data flows</h2><p class="intro">Pick a number on the diagram or below for what breaks, what to check and how to confirm the fix. Pick a box to see what that system owns and an open question.</p></div></div>
+  <div class="flist">${FLOWS.map(f=>`<button class="fbtn" type="button" data-go="${f.n}"><span class="num">${f.n}</span><span>${f.title}</span></button>`).join('')}</div>
+  <p class="foot-note">Tools come from public sources. Names marked ? aren't confirmed; items marked * are inferred. Flow 9 is a proposal.</p>`;
+}
+
+const METHOD = `<div class="ph"><div class="t"><h2>Troubleshooting any flow</h2></div></div>
+<ol class="steps">
+<li><b>Size it.</b> One record, one flow, or every flow? Everything failing at once points to credentials or an outage. One record points to its data.</li>
+<li><b>Find the record by its ID</b> (Shopify order ID, SKU, NetSuite external ID) in the audit log, connector queue or n8n executions.</li>
+<li><b>Read the exact error</b> and sort it (Errors tab).</li>
+<li><b>Fix the cause, not just the record.</b> A missing SKU in NetSuite fails every order that uses it.</li>
+<li><b>Replay safely.</b> Upserts keyed on an external ID mean a rerun updates instead of duplicating.</li>
+<li><b>Verify in the target system</b> and reconcile counts and totals, not only the one record.</li>
+<li><b>Prevent the repeat</b> with a validation, a test or a monitor.</li>
+</ol>`;
+
+const ERRORS = `<div class="ph"><div class="t"><h2>Read the error</h2></div></div>
+<table class="err"><tbody>
+<tr><td>401 / 403</td><td>Access</td><td>Expired token, rotated secret, or the integration role lost a permission.</td></tr>
+<tr><td>400 / validation</td><td>Data</td><td>Unknown SKU, missing required field, value not in a list, bad mapping.</td></tr>
+<tr><td>429 / concurrency</td><td>Limits</td><td>Too many calls at once, typical during a drop. Back off, queue, spread the load.</td></tr>
+<tr><td>5xx / timeout</td><td>Other system</td><td>Retry later and check the vendor status page. Confirm the first attempt didn't land before retrying.</td></tr>
+<tr><td>No error</td><td>Silence</td><td>Missed webhook, paused schedule, disconnected app. Only a freshness monitor or a reconciliation catches it.</td></tr>
+</tbody></table>`;
+
+const OWNS = `<div class="ph"><div class="t"><h2>Who owns which data</h2><p class="intro">One system of record per kind of data. Copies never write back over it.</p></div></div>
+<table class="ownt"><thead><tr><th>Data</th><th>System of record</th><th>Copies</th></tr></thead><tbody>
+<tr><td>Item master</td><td>NetSuite</td><td>Shopify, Snowflake</td></tr>
+<tr><td>Style specs, testing*</td><td>Airtable or PLM</td><td>NetSuite</td></tr>
+<tr><td>Product content, images</td><td>Shopify</td><td>Klaviyo feed</td></tr>
+<tr><td>Orders</td><td>Shopify creates; NetSuite owns the financial record</td><td>Gorgias, Klaviyo, Snowflake</td></tr>
+<tr><td>Inventory</td><td>3PL physical; NetSuite books</td><td>Shopify</td></tr>
+<tr><td>Email and SMS consent</td><td>Klaviyo, Attentive</td><td>Shopify</td></tr>
+<tr><td>Employee record</td><td>BambooHR</td><td>Okta</td></tr>
+<tr><td>Identity, app access</td><td>Okta</td><td>Each app</td></tr>
+<tr><td>Reporting</td><td>None (Snowflake is a copy)</td><td>Dashboards</td></tr>
+</tbody></table>`;
+
+function render(){
+  document.querySelectorAll('.tab').forEach(t=>t.setAttribute('aria-selected', t.dataset.tab===state.tab));
+  let html, label='';
+  if(state.tab==='method'){ html=METHOD; label='Method'; }
+  else if(state.tab==='errors'){ html=ERRORS; label='Errors'; }
+  else if(state.tab==='owns'){ html=OWNS; label='Ownership'; }
+  else if(state.flow){ html=renderFlow(FLOWS[state.flow-1]); label=`Flow ${state.flow} of 9`; }
+  else if(state.box){ html=renderBox(state.box); label=BOXES[state.box].title; }
+  else { html=renderOverview(); label='Overview'; }
+  body.innerHTML = html; body.scrollTop = 0; where.textContent = label;
+  const stepping = state.tab==='flows' && !state.box;
+  prev.disabled = !stepping || !state.flow;
+  next.disabled = !stepping || state.flow===9;
+  highlight();
+}
+
+function goFlow(n){ state={tab:'flows',flow:n,box:null}; render(); }
+function goBox(id){ state={tab:'flows',flow:null,box:id}; render(); }
+function goHome(){ state={tab:'flows',flow:null,box:null}; render(); }
+function goTab(t){ state={tab:t,flow:null,box:null}; render(); }
+
+// Highlight marker
+const defs = svg.querySelector('defs');
+defs.insertAdjacentHTML('beforeend','<marker id="ah-hi" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrhead-hi" d="M2 1L8 5L2 9"/></marker>');
+
+svg.addEventListener('click', e=>{
+  const b = e.target.closest('.badge'); if(b){ goFlow(+b.dataset.f); return; }
+  const n = e.target.closest('.node'); if(n){ goBox(n.dataset.b); return; }
+  goHome();
+});
+svg.addEventListener('keydown', e=>{
+  if(e.key!=='Enter' && e.key!==' ') return;
+  const b = e.target.closest('.badge'), n = e.target.closest('.node');
+  if(b||n){ e.preventDefault(); b ? goFlow(+b.dataset.f) : goBox(n.dataset.b); }
+});
+body.addEventListener('click', e=>{ const g=e.target.closest('[data-go]'); if(g) goFlow(+g.dataset.go); });
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=> t.dataset.tab==='flows' ? goHome() : goTab(t.dataset.tab)));
+prev.addEventListener('click',()=>{ if(state.flow>1) goFlow(state.flow-1); else goHome(); });
+next.addEventListener('click',()=> goFlow(state.flow ? Math.min(9,state.flow+1) : 1));
+document.addEventListener('keydown', e=>{
+  if(e.metaKey||e.ctrlKey||e.altKey) return;
+  const k=e.key;
+  if(/^[1-9]$/.test(k)) goFlow(+k);
+  else if(k==='Escape'||k==='0') goHome();
+  else if(k==='ArrowRight'){ if(state.tab==='flows'&&!state.box) goFlow(state.flow?Math.min(9,state.flow+1):1); }
+  else if(k==='ArrowLeft'){ if(state.flow>1) goFlow(state.flow-1); else if(state.flow===1) goHome(); }
+  else if(k==='m'||k==='M') goTab('method');
+  else if(k==='e'||k==='E') goTab('errors');
+  else if(k==='o'||k==='O') goTab('owns');
+  else return;
+  e.preventDefault();
+});
+render();
+})();
+</script>
+</body></html>

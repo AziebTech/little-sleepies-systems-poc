@@ -1,0 +1,697 @@
+{
+  "id": "lsWf06CritclPath",
+  "name": "LS-06 Launch Critical Path",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## LS-06 Launch critical path\n**Weekdays 13:00 UTC.** For every colorway, counts back from the launch date: PP sample approved (T-90, Production), licensor approval (T-75, licensed prints only), compliance passed (T-60, Compliance & Integrity), photography delivered (T-30, Photography), synced to ERP (T-21, Systems).\n\n1. Writes status back to **Colorways**, only fields that changed (no changes = no API calls)\n2. Snapshots every milestone to `audit.colorway_milestones` (days-per-stage SQL)\n3. ONE Slack digest grouped by team, not one ping per colorway\n\nLead times live in `shared/product_model.json`.",
+        "width": 560,
+        "height": 340
+      },
+      "id": "81881881-b98a-46aa-ac34-80ff0de6bc8b",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -500,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 13 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "cef4c126-77b7-4da2-af3e-a1eface85124",
+      "name": "Weekdays 13:00 UTC",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Colorways",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pageSize",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "offset",
+                    "value": "={{ $response.body.offset }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.offset }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50,
+              "requestInterval": 250
+            }
+          }
+        }
+      },
+      "id": "ccc22da5-009c-4c3e-a923-96b73c5fe0a7",
+      "name": "Load Colorways",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Style%20Master",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pageSize",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "offset",
+                    "value": "={{ $response.body.offset }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.offset }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50,
+              "requestInterval": 250
+            }
+          }
+        }
+      },
+      "id": "b5ee36b0-b763-49ff-a992-1e99d98056fe",
+      "name": "Load Style Master",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Prints",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pageSize",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "offset",
+                    "value": "={{ $response.body.offset }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.offset }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50,
+              "requestInterval": 250
+            }
+          }
+        }
+      },
+      "id": "1b3b8132-5616-45cc-a142-ac39c4559b86",
+      "name": "Load Prints",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Samples",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pageSize",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "offset",
+                    "value": "={{ $response.body.offset }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.offset }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50,
+              "requestInterval": 250
+            }
+          }
+        }
+      },
+      "id": "29c47893-ce00-450a-a77d-439f07e7e509",
+      "name": "Load Samples",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Compliance%20Tests",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pageSize",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "offset",
+                    "value": "={{ $response.body.offset }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.offset }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50,
+              "requestInterval": 250
+            }
+          }
+        }
+      },
+      "id": "cb0d1437-c06b-4d5f-a91f-1ee9a06effa8",
+      "name": "Load Compliance Tests",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Photo%20Shots",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pageSize",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "offset",
+                    "value": "={{ $response.body.offset }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.offset }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50,
+              "requestInterval": 250
+            }
+          }
+        }
+      },
+      "id": "b1b959c3-c85a-4e4c-aa7a-a09467792b26",
+      "name": "Load Photo Shots",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mode: Run Once for All Items\n// Joins Colorways with their Style, Print, Samples, Compliance Tests and Photo Shots\n// (Airtable link fields hold record IDs) and computes each colorway's critical path.\n// Each \"Load …\" node may return several items: one per page of Airtable results.\n// ---- lib/product-model.js -------------------------------------------------\n// Product model v2: real Little Sleepies SKU structure + launch critical path.\n// Python twin for the SKU rules: python/ls_integrations/product_model.py.\n// The line below is replaced at build time with the contents of shared/product_model.json,\n// available here as PRODUCT_MODEL (divisions, size codes, compliance profiles, milestones).\nconst PRODUCT_MODEL = {\"_comment\":\"Product model v2: one source of truth for the JS (n8n, inlined at build time) and Python code. Division letters, size labels and size codes were observed on the public littlesleepies.com product feed (Oct 2026). Compliance requirements and milestone lead times are a SIMPLIFIED model for the POC: the real matrix belongs to Compliance & Integrity and the real calendar to Production.\",\"divisions\":{\"Sleep\":{\"code\":\"S\",\"fabric\":\"Lunaluxe\"},\"Play\":{\"code\":\"D\",\"fabric\":\"Soluxe\"},\"Other\":{\"code\":\"O\",\"fabric\":null}},\"sizeCodes\":{\"S\":[{\"label\":\"Preemie\",\"code\":\"10\",\"sort\":1,\"ageGroup\":\"Baby\"},{\"label\":\"Newborn\",\"code\":\"11\",\"sort\":2,\"ageGroup\":\"Baby\"},{\"label\":\"0-3 months\",\"code\":\"01\",\"sort\":3,\"ageGroup\":\"Baby\"},{\"label\":\"3-6 months\",\"code\":\"02\",\"sort\":4,\"ageGroup\":\"Baby\"},{\"label\":\"6-12 months\",\"code\":\"03\",\"sort\":5,\"ageGroup\":\"Baby\"},{\"label\":\"12-18 months\",\"code\":\"04\",\"sort\":6,\"ageGroup\":\"Baby\"},{\"label\":\"18-24 months\",\"code\":\"05\",\"sort\":7,\"ageGroup\":\"Baby\"},{\"label\":\"2T\",\"code\":\"12\",\"sort\":8,\"ageGroup\":\"Toddler\"},{\"label\":\"3T\",\"code\":\"08\",\"sort\":9,\"ageGroup\":\"Toddler\"},{\"label\":\"4T\",\"code\":\"14\",\"sort\":10,\"ageGroup\":\"Toddler\"},{\"label\":\"5/6\",\"code\":\"15\",\"sort\":11,\"ageGroup\":\"Kid\"},{\"label\":\"7/8\",\"code\":\"16\",\"sort\":12,\"ageGroup\":\"Kid\"},{\"label\":\"9/10\",\"code\":\"23\",\"sort\":13,\"ageGroup\":\"Kid\"},{\"label\":\"12/14\",\"code\":\"24\",\"sort\":14,\"ageGroup\":\"Kid\"},{\"label\":\"16\",\"code\":\"25\",\"sort\":15,\"ageGroup\":\"Kid\"},{\"label\":\"XS\",\"code\":\"22\",\"sort\":16,\"ageGroup\":\"Adult\"},{\"label\":\"S\",\"code\":\"17\",\"sort\":17,\"ageGroup\":\"Adult\"},{\"label\":\"M\",\"code\":\"18\",\"sort\":18,\"ageGroup\":\"Adult\"},{\"label\":\"L\",\"code\":\"19\",\"sort\":19,\"ageGroup\":\"Adult\"},{\"label\":\"XL\",\"code\":\"20\",\"sort\":20,\"ageGroup\":\"Adult\"},{\"label\":\"XXL\",\"code\":\"21\",\"sort\":21,\"ageGroup\":\"Adult\"},{\"label\":\"3XL\",\"code\":\"32\",\"sort\":22,\"ageGroup\":\"Adult\"},{\"label\":\"Large\",\"code\":\"27\",\"sort\":23,\"ageGroup\":\"One Size\"},{\"label\":\"Newborn - 3T\",\"code\":\"29\",\"sort\":24,\"ageGroup\":\"One Size\"}],\"D\":[{\"label\":\"0-3 months\",\"code\":\"34\",\"sort\":1,\"ageGroup\":\"Baby\"},{\"label\":\"3-6 months\",\"code\":\"35\",\"sort\":2,\"ageGroup\":\"Baby\"},{\"label\":\"6-12 months\",\"code\":\"36\",\"sort\":3,\"ageGroup\":\"Baby\"},{\"label\":\"12-18 months\",\"code\":\"37\",\"sort\":4,\"ageGroup\":\"Baby\"},{\"label\":\"18-24 months\",\"code\":\"38\",\"sort\":5,\"ageGroup\":\"Baby\"}],\"O\":[{\"label\":\"One Size\",\"code\":\"26\",\"sort\":1,\"ageGroup\":\"One Size\"}]},\"complianceProfiles\":{\"Children's Sleepwear\":[\"Lead (CPSIA)\",\"Phthalates (CPSIA)\",\"Snug-Fit Dimensions (16 CFR 1615/1616)\",\"Tracking Label\",\"Children's Product Certificate\"],\"Children's Apparel\":[\"Lead (CPSIA)\",\"Flammability (16 CFR 1610)\",\"Tracking Label\",\"Children's Product Certificate\"],\"Children's Accessory\":[\"Lead (CPSIA)\",\"Tracking Label\",\"Children's Product Certificate\"],\"Adult Apparel\":[\"Flammability (16 CFR 1610)\"]},\"milestones\":[{\"key\":\"sample\",\"label\":\"Pre-production sample approved\",\"team\":\"Production\",\"daysBeforeLaunch\":90},{\"key\":\"license\",\"label\":\"Licensor approval\",\"team\":\"Product\",\"daysBeforeLaunch\":75,\"licensedOnly\":true},{\"key\":\"compliance\",\"label\":\"Compliance tests passed\",\"team\":\"Compliance & Integrity\",\"daysBeforeLaunch\":60},{\"key\":\"photo\",\"label\":\"Photography delivered\",\"team\":\"Photography\",\"daysBeforeLaunch\":30},{\"key\":\"erp\",\"label\":\"Synced to the ERP\",\"team\":\"Systems\",\"daysBeforeLaunch\":21}],\"atRiskWindowDays\":7};\n// DIVISION-STYLE-COLORWAY[-SIZE], e.g. S-0108-0665-10 (Sleep, Zippy, colorway 0665, Preemie).\n// The colorway number is per style: the same print has a different number on each style.\n// Pattern: S, D or O, then 4 digits, then 4 digits, then optionally 2 more digits for the size.\nconst SKU_PATTERN = /^([SDO])-(\\d{4})-(\\d{4})(?:-(\\d{2}))?$/;\n\n// Turn a division letter (e.g. \"S\") into its name (e.g. \"Sleep\"), or null if unknown.\nfunction divisionByCode(code) {\n  return Object.keys(PRODUCT_MODEL.divisions).find((d) => PRODUCT_MODEL.divisions[d].code === code) || null;\n}\n\n// Build the colorway SKU (e.g. \"S-0108-0665\") from its parts. Returns null if any part is bad.\nfunction buildSkuBase({ division, styleNumber, colorwayNumber }) {\n  // The division's settings (including its letter code).\n  const d = PRODUCT_MODEL.divisions[division];\n  // Style and colorway numbers as text with spaces trimmed.\n  const style = String(styleNumber ?? '').trim();\n  const colorway = String(colorwayNumber ?? '').trim();\n  // Unknown division, or a number that isn't exactly 4 digits? Can't build a SKU.\n  if (!d || !/^\\d{4}$/.test(style) || !/^\\d{4}$/.test(colorway)) return null;\n  // Join the parts with dashes.\n  return `${d.code}-${style}-${colorway}`;\n}\n\n// Split a SKU into its parts. Returns null if it isn't a valid SKU.\nfunction parseSku(sku) {\n  // Check the SKU against the pattern; m holds the matched pieces.\n  const m = String(sku ?? '').trim().match(SKU_PATTERN);\n  // Didn't match the pattern.\n  if (!m) return null;\n  // m[1] = division letter, m[2] = style, m[3] = colorway, m[4] = size code (may be missing).\n  return { divisionCode: m[1], division: divisionByCode(m[1]), style: m[2], colorway: m[3], sizeCode: m[4] || null };\n}\n\n// Variant SKUs for a size run. Size codes depend on the division (0-3 months is 01 in Sleep, 34 in Play).\nfunction sizeRunSkus(skuBase, sizeLabels) {\n  // Split the colorway SKU into its parts.\n  const parsed = parseSku(skuBase);\n  // That division's list of sizes and their codes (empty list if unknown).\n  const table = parsed ? PRODUCT_MODEL.sizeCodes[parsed.divisionCode] || [] : [];\n  // Sizes we found a code for.\n  const variants = [];\n  // Sizes we couldn't find a code for.\n  const unknown = [];\n  // Look up each size label.\n  for (const label of sizeLabels || []) {\n    const size = table.find((s) => s.label === label);\n    // Found: add the full SKU, e.g. \"S-0108-0665-10\".\n    if (size) variants.push({ size: label, sku: `${skuBase}-${size.code}`, sort: size.sort });\n    // Not found: note it.\n    else unknown.push(label);\n  }\n  // Put the sizes in their natural order (smallest first).\n  variants.sort((a, b) => a.sort - b.sort);\n  return { variants, unknown };\n}\n\n// Turn a size code (e.g. \"10\") into its label (e.g. \"Preemie\"). Falls back to the code.\nfunction sizeLabelFor(divisionCode, sizeCode) {\n  const size = (PRODUCT_MODEL.sizeCodes[divisionCode] || []).find((s) => s.code === sizeCode);\n  return size ? size.label : sizeCode;\n}\n\n// ERPNext Item Attribute per division: the same label has different codes per division\n// (0-3 months = 01 in Sleep, 34 in Play), and an attribute value can only have one abbreviation.\nfunction sizeAttributeName(division) {\n  // e.g. \"Size (Sleep)\".\n  return `Size (${division})`;\n}\n\n// Accepts 18.5, \"18.50\", \"$1,204.99\". Returns a 2-dp number, or null if not a positive amount.\nfunction parseCost(raw) {\n  // Nothing given.\n  if (raw === null || raw === undefined) return null;\n  // Numbers stay as they are; text has \"$\", commas and spaces removed.\n  const cleaned = typeof raw === 'number' ? raw : String(raw).replace(/[$,\\s]/g, '');\n  // Empty, or not a plain number like \"12\" or \"12.50\"? Reject it.\n  if (cleaned === '' || !/^-?\\d*\\.?\\d+$/.test(String(cleaned))) return null;\n  // Convert to a number.\n  const n = Number(cleaned);\n  // Must be a real number above zero.\n  if (!Number.isFinite(n) || n <= 0) return null;\n  // Round to cents.\n  return Math.round(n * 100) / 100;\n}\n\n// ---- colorway → ERP template + size variants (LS-01) ----------------------\n// lookups: Maps of Airtable record id → fields for Style Master, Prints and Size Codes.\n// The template's item_code is the SKU base; ERPNext names each variant\n// template-code + \"-\" + attribute abbreviation, i.e. exactly S-0108-0665-10.\nfunction transformColorway({ recordId, fields = {} }, { styles, prints, sizeCodes }) {\n  // Every problem found. If this stays empty, the colorway is valid.\n  const errors = [];\n  // The linked style and print (first linked ID), or null if none.\n  const style = styles.get((fields.Style || [])[0]) || null;\n  const print = prints.get((fields.Print || [])[0]) || null;\n  // The colorway name with spaces trimmed.\n  const name = String(fields.Colorway || '').trim();\n\n  // Basic checks: approved, compliance passed, and has a name, style and print.\n  if (fields['Production Status'] !== 'Approved for Production') errors.push(`Production Status is \"${fields['Production Status'] || ''}\", expected \"Approved for Production\"`);\n  if (fields['Compliance Status'] !== 'Passed') errors.push(`Compliance Status is \"${fields['Compliance Status'] || 'not computed'}\": every required test must pass first (see the Critical Path field)`);\n  if (!name) errors.push('Colorway name is required');\n  if (!style) errors.push('No style linked');\n  if (!print) errors.push('No print linked');\n\n  // The division comes from the style (e.g. \"Sleep\").\n  const division = style ? style.Division : null;\n  // Build the colorway SKU from the division, style number and colorway number.\n  const skuBase = style ? buildSkuBase({ division, styleNumber: style['Style Number'], colorwayNumber: fields['Colorway Number'] }) : null;\n  // Couldn't build it? The colorway number must be wrong.\n  if (style && !skuBase) errors.push(`Colorway Number \"${fields['Colorway Number'] || ''}\" must be 4 digits`);\n  // Check the fabric is the right one for this division.\n  if (style && style.Fabric && !fabricMatchesDivision(division, style.Fabric)) errors.push(`${division} styles should be ${PRODUCT_MODEL.divisions[division].fabric}, not ${style.Fabric}`);\n\n  // The style's sizes: turn each linked size ID into its record, dropping any not found.\n  const runRows = style ? (style['Size Run'] || []).map((id) => sizeCodes.get(id)).filter(Boolean) : [];\n  // Any sizes that belong to a different division (a data mistake).\n  const wrongDivision = runRows.filter((s) => s.Division !== division).map((s) => s['Size Label']);\n  // No sizes at all.\n  if (style && !runRows.length) errors.push(`Style ${style['Style Number']} has no Size Run`);\n  // Sizes from the wrong division.\n  if (wrongDivision.length) errors.push(`Size Run includes ${division ? 'non-' + division : 'mismatched'} sizes: ${wrongDivision.join(', ')}`);\n  // The correct sizes, in their sort order, as labels (e.g. [\"Preemie\", \"Newborn\", …]).\n  const sizes = runRows.filter((s) => s.Division === division).sort((a, b) => a['Sort Order'] - b['Sort Order']).map((s) => s['Size Label']);\n  // Check every size has a size code.\n  const { unknown } = skuBase ? sizeRunSkus(skuBase, sizes) : { unknown: [] };\n  if (unknown.length) errors.push(`No size code for ${unknown.join(', ')} in division ${division}`);\n\n  // Cost and retail prices as clean numbers (null if bad).\n  const cost = parseCost(fields['Cost Price']);\n  const retail = style ? parseCost(style['Retail Price']) : null;\n  // Launch date as \"YYYY-MM-DD\", or null.\n  const launch = fields['Launch Date'] ? String(fields['Launch Date']).slice(0, 10) : null;\n  // Price and date checks.\n  if (cost === null) errors.push('Cost Price must be a positive amount');\n  if (style && retail === null) errors.push(`Style ${style['Style Number']} needs a Retail Price`);\n  if (!launch) errors.push('Launch Date is required');\n\n  // Valid if no problems were found.\n  const valid = errors.length === 0;\n  // The ERP size attribute for this division, e.g. \"Size (Sleep)\".\n  const attribute = division ? sizeAttributeName(division) : null;\n  // Fields shared by \"create\" and \"update\" (only built when valid).\n  const common = valid ? {\n    // Name cut to 140 characters (ERPNext's limit).\n    item_name: name.slice(0, 140),\n    item_group: division,\n    brand: 'Little Sleepies',\n    // \"<Print Name> <Style Name>. <Fiber Content>\".\n    description: `${print['Print Name']} ${style['Style Name']}. ${style['Fiber Content'] || ''}`.trim(),\n    valuation_rate: cost,\n    // Links back to Airtable so we can find this item again (keeps the sync idempotent).\n    custom_airtable_record_id: recordId,\n    // The rest are custom fields copied from the style, print and colorway.\n    custom_style_id: style['Style Number'],\n    custom_colorway_number: String(fields['Colorway Number']).trim(),\n    custom_print_name: print['Print Name'],\n    custom_print_family: print.Slug || null,\n    custom_print_category: print['Print Category'] || null,\n    custom_product_type: style['Product Type'] || null,\n    custom_fabric_type: style.Fabric || null,\n    custom_fiber_content: style['Fiber Content'] || null,\n    custom_compliance_profile: style['Compliance Profile'] || null,\n    custom_launch_date: launch,\n    // Merch date, or the launch date if there isn't one.\n    custom_merch_date: fields['Merch Date'] ? String(fields['Merch Date']).slice(0, 10) : launch,\n    custom_inventory_tier: fields['Inventory Tier'] ?? null,\n    // ERPNext checkboxes use 1/0, not true/false.\n    custom_limited_edition: fields['Limited Edition'] ? 1 : 0,\n    custom_purchase_limit: fields['Purchase Limit'] ?? null,\n    custom_retail_price: retail,\n    // Sizes stored as one text field, e.g. \"Preemie|Newborn|0-3 Months\".\n    custom_size_run: sizes.join('|'),\n  } : null;\n\n  return {\n    recordId,\n    colorwayName: name,\n    skuBase,\n    valid,\n    errors,\n    sizes,\n    approvedAt: null,\n    // Template-only fields can't change once variants exist, so updates send `common` only.\n    // Full payload for creating a new style template (null if invalid).\n    templatePayload: valid ? {\n      item_code: skuBase, stock_uom: 'Nos', is_stock_item: 1, is_purchase_item: 1, is_sales_item: 1,\n      has_variants: 1, variant_based_on: 'Item Attribute', attributes: [{ attribute }], ...common,\n    } : null,\n    // Payload for updating an existing template.\n    updatePayload: common,\n    // erpnext.controllers.item_variant.enqueue_multiple_variant_creation expects args as a JSON string.\n    // Request asking ERPNext to create one variant per size (null if invalid).\n    variantRequest: valid ? { item: skuBase, args: JSON.stringify({ [attribute]: sizes }) } : null,\n  };\n}\n\n// The list of compliance tests a profile requires, or null if the profile is unknown.\nfunction requiredTests(profile) {\n  return PRODUCT_MODEL.complianceProfiles[profile] || null;\n}\n\n// true if the fabric is the one this division expects (or the division has no rule).\nfunction fabricMatchesDivision(division, fabric) {\n  const expected = (PRODUCT_MODEL.divisions[division] || {}).fabric;\n  return !expected || expected === fabric;\n}\n\n// ---- dates (date-only, UTC) ----------------------------------------------\n// Add (or with a negative number, subtract) days from a \"YYYY-MM-DD\" date.\nfunction addDaysIso(iso, days) {\n  // Midnight UTC on that date, so time zones can't shift the day.\n  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00Z`);\n  d.setUTCDate(d.getUTCDate() + days);\n  // Back to \"YYYY-MM-DD\".\n  return d.toISOString().slice(0, 10);\n}\n// Number of days from one date to another (negative if \"to\" is earlier). 86400000 = ms in a day.\nfunction daysBetween(fromIso, toIso) {\n  return Math.round((Date.parse(`${toIso.slice(0, 10)}T00:00:00Z`) - Date.parse(`${fromIso.slice(0, 10)}T00:00:00Z`)) / 86400000);\n}\n// The latest date in a list (ignoring blanks), or null. \"YYYY-MM-DD\" dates sort correctly as text.\nconst maxDate = (dates) => dates.filter(Boolean).map((d) => String(d).slice(0, 10)).sort().pop() || null;\n\n// ---- critical path --------------------------------------------------------\n// Late = past due and not done. A blocked milestone (failed test, rejected sample) is only\n// \"late\" once it's past due; before that it's a risk. Shared by the timeline and the digest.\nconst isLate = (m) => m.status === 'open_late' || (m.status === 'blocked' && m.daysLate > 0);\n// Inputs are Airtable `fields` objects. Returns the Colorway fields to write back and one\n// row per milestone (for the warehouse snapshot and the team digest).\nfunction computeCriticalPath({ colorway, style, print, samples = [], tests = [], shots = [], today }) {\n  // Data problems found along the way.\n  const issues = [];\n  if (!style) issues.push('No style linked');\n  if (!print) issues.push('No print linked');\n  // Build the colorway SKU (null if we can't).\n  const skuBase = style\n    ? buildSkuBase({ division: style.Division, styleNumber: style['Style Number'], colorwayNumber: colorway['Colorway Number'] })\n    : null;\n  // Have a style but no SKU? The colorway number must be wrong.\n  if (style && !skuBase) issues.push(`Colorway Number \"${colorway['Colorway Number'] ?? ''}\" must be 4 digits (style ${style['Style Number']}, ${style.Division})`);\n  // Wrong fabric for the division.\n  if (style && style.Fabric && !fabricMatchesDivision(style.Division, style.Fabric)) {\n    issues.push(`${style.Division} styles should be ${PRODUCT_MODEL.divisions[style.Division].fabric}, not ${style.Fabric}`);\n  }\n\n  // Sample: the pre-production (PP) sample approval is the gate.\n  // Only the pre-production samples.\n  const pp = samples.filter((s) => s.Round === 'Pre-Production');\n  // An approved one, if any.\n  const ppApproved = pp.find((s) => s.Status === 'Approved');\n  // The most recent one (sorted by decision date, take the last). slice() copies so the original isn't reordered.\n  const ppLatest = pp.slice().sort((a, b) => String(a['Decision Date'] || '').localeCompare(String(b['Decision Date'] || ''))).pop();\n  // Overall sample status.\n  const sampleStatus = ppApproved ? 'Approved' : samples.length ? 'In Progress' : 'Not Started';\n\n  // Compliance: every test the style's profile requires must be Passed (or Not Applicable).\n  // The tests this style needs.\n  const required = style ? requiredTests(style['Compliance Profile']) : null;\n  if (style && !required) issues.push(`Unknown Compliance Profile \"${style['Compliance Profile'] ?? ''}\"`);\n  // Helper: the most recent test of one type (by result date, or submitted date if no result yet).\n  const latestOfType = (type) => tests.filter((t) => t['Test Type'] === type)\n    .sort((a, b) => String(a['Result Date'] || a['Submitted Date'] || '').localeCompare(String(b['Result Date'] || b['Submitted Date'] || ''))).pop();\n  // For each required test type, its latest test (may be missing).\n  const perType = (required || []).map((type) => ({ type, test: latestOfType(type) }));\n  // Test types whose latest result failed.\n  const failed = perType.filter((p) => p.test && p.test.Status === 'Failed').map((p) => p.type);\n  // Test types not yet passed (missing, pending or failed).\n  const missing = perType.filter((p) => !p.test || !['Passed', 'Not Applicable'].includes(p.test.Status)).map((p) => p.type);\n  // Overall compliance status.\n  const complianceStatus = !tests.length ? 'Not Started' : failed.length ? 'Failed' : required && !missing.length ? 'Passed' : 'In Testing';\n\n  // Photography: at least one shot, all delivered.\n  const photoDone = shots.length > 0 && shots.every((s) => s.Status === 'Delivered');\n  const photoStatus = photoDone ? 'Complete' : shots.length ? 'In Progress' : 'Not Started';\n\n  // Licensed prints need an extra licensor approval milestone.\n  const licensed = Boolean(print && print.License === 'Licensed');\n  // Launch date as \"YYYY-MM-DD\", or null.\n  const launch = colorway['Launch Date'] ? String(colorway['Launch Date']).slice(0, 10) : null;\n\n  // For each milestone: is it done, when, is it blocked, and any extra note.\n  const state = {\n    // Sample: done when a PP sample is approved; blocked if the latest one was rejected.\n    sample: { done: Boolean(ppApproved), completedOn: ppApproved && ppApproved['Decision Date'],\n      blocked: !ppApproved && ppLatest && ppLatest.Status === 'Rejected' ? 'Last PP sample rejected: new round needed' : null },\n    // License: done when the licensor approves; blocked if they asked for changes.\n    license: { done: print && print['Licensor Approval'] === 'Approved', completedOn: print && print['Licensor Approval Date'],\n      blocked: print && print['Licensor Approval'] === 'Changes Requested' ? 'Licensor requested changes' : null },\n    // Compliance: done when all tests pass (date = last pass); blocked if any failed; note lists what's still waiting.\n    compliance: { done: complianceStatus === 'Passed', completedOn: maxDate(tests.filter((t) => t.Status === 'Passed').map((t) => t['Result Date'])),\n      blocked: failed.length ? `Failed: ${failed.join(', ')}` : null,\n      detail: complianceStatus !== 'Passed' && missing.length && !failed.length ? `Waiting on: ${missing.join(', ')}` : null },\n    // Photo: done when all shots are delivered; note shows progress like \"2/3 shots delivered\".\n    photo: { done: photoDone, completedOn: maxDate(shots.map((s) => s['Delivered Date'])),\n      detail: !photoDone && shots.length ? `${shots.filter((s) => s.Status === 'Delivered').length}/${shots.length} shots delivered` : null },\n    // ERP: done once the colorway has synced to ERPNext.\n    erp: { done: colorway['Sync Status'] === 'Synced', completedOn: colorway['Last Synced At'] },\n  };\n\n  // Build the milestone list from the product model.\n  const milestones = PRODUCT_MODEL.milestones\n    // Skip \"licensed only\" milestones for prints that aren't licensed.\n    .filter((m) => !m.licensedOnly || licensed)\n    .map((m) => {\n      // This milestone's state from above.\n      const s = state[m.key];\n      // Due date = launch date minus this milestone's lead time (null if no launch date).\n      const due = launch ? addDaysIso(launch, -m.daysBeforeLaunch) : null;\n      // Only a finished milestone has a completion date (e.g. the last *passed* test is not\n      // \"compliance passed\" while other required tests are still pending).\n      const completedOn = s.done && s.completedOn ? String(s.completedOn).slice(0, 10) : null;\n      // Work out the status and how many days late.\n      let status;\n      let daysLate = 0;\n      // Done: late if it finished after the due date.\n      if (s.done) {\n        daysLate = completedOn && due ? Math.max(0, daysBetween(due, completedOn)) : 0;\n        status = daysLate > 0 ? 'done_late' : 'done_on_time';\n      // Not done and no due date.\n      } else if (!due) status = 'open_no_date';\n      // Not done, with a due date.\n      else {\n        // Days until due (negative = already past).\n        const daysUntil = daysBetween(today, due);\n        if (daysUntil < 0) daysLate = -daysUntil;\n        // Blocked beats everything; then late; then \"at risk\" if due soon; else on track.\n        status = s.blocked ? 'blocked' : daysUntil < 0 ? 'open_late' : daysUntil <= PRODUCT_MODEL.atRiskWindowDays ? 'open_at_risk' : 'open_on_track';\n      }\n      // One row for this milestone.\n      return { key: m.key, label: m.label, team: m.team, due, completedOn, status, daysLate, note: s.blocked || s.detail || null };\n    });\n\n  // Milestones not yet done.\n  const open = milestones.filter((m) => !m.status.startsWith('done'));\n  // Data issues (e.g. a malformed colorway number) will block the ERP sync later, so they\n  // count as risk even when every date looks fine.\n  // Overall timeline status, checked in this order.\n  const timeline = !launch ? 'No Launch Date'\n    : !open.length ? 'Complete'\n    : open.some(isLate) ? 'Late'\n    : open.some((m) => m.status === 'open_at_risk' || m.status === 'blocked') || issues.length ? 'At Risk'\n    : 'On Track';\n  // The next open milestone with the earliest due date (null if none).\n  const next = open.filter((m) => m.due).sort((a, b) => a.due.localeCompare(b.due))[0] || null;\n\n  // A symbol for each status, used in the text summary.\n  const icon = { done_on_time: '✓', done_late: '✓', open_on_track: '○', open_at_risk: '!', open_late: '✗', blocked: '⛔', open_no_date: '○' };\n  // The text summary, one line per data issue then one per milestone.\n  const lines = [\n    ...issues.map((i) => `⚠ Data: ${i}`),\n    ...milestones.map((m) => {\n      // Done: e.g. \"✓ Sample: done 2026-09-01 (3 days late)\".\n      if (m.status.startsWith('done')) return `${icon[m.status]} ${m.label}: done ${m.completedOn || '(no date)'}${m.daysLate ? ` (${m.daysLate} days late)` : ''}`;\n      // Not done: e.g. \"✗ Photo: due 2026-10-01 (<team>), 11 days late · 2/3 shots delivered\".\n      const when = m.due ? `due ${m.due}` : 'no launch date';\n      const lateness = m.status === 'open_late' || (m.status === 'blocked' && m.daysLate) ? `, ${m.daysLate} days late` : m.status === 'open_at_risk' ? ', at risk' : '';\n      return `${icon[m.status]} ${m.label}: ${when} (${m.team})${lateness}${m.note ? ` · ${m.note}` : ''}`;\n    }),\n  ];\n\n  return {\n    issues,\n    milestones,\n    // The Airtable Colorway fields to write back.\n    fields: {\n      'SKU Base': skuBase || '',\n      'Sample Status': sampleStatus,\n      'Compliance Status': complianceStatus,\n      'Photo Status': photoStatus,\n      'Timeline Status': timeline,\n      'Next Milestone': next ? `${next.label} (${next.team}), due ${next.due}` : '',\n      'Next Due Date': next ? next.due : null,\n      // The most days late of any open milestone (0 if none).\n      'Days Late': Math.max(0, ...open.map((m) => m.daysLate)),\n      'Critical Path': lines.join('\\n'),\n    },\n  };\n}\n\n// Only send fields whose value changed: saves Airtable API calls and keeps the record's\n// revision history meaningful. Airtable omits empty fields, so treat ''/null/undefined alike.\nfunction diffFields(current, computed) {\n  // Helper: treat undefined, null and '' all as null.\n  const norm = (v) => (v === undefined || v === null || v === '' ? null : v);\n  // The fields that differ.\n  const changed = {};\n  // Compare each computed field with what's in Airtable now.\n  for (const [k, v] of Object.entries(computed)) {\n    if (norm(current[k]) !== norm(v)) changed[k] = v;\n  }\n  // Return the changes, or null if nothing changed.\n  return Object.keys(changed).length ? changed : null;\n}\n\n// One Slack message for the whole portfolio, grouped by owning team (alert per cause, not\n// one ping per colorway). Returns null when nothing is late or at risk.\nfunction buildTeamDigest(results, { maxPerTeam = 8 } = {}) {\n  // team name → list of problem milestones.\n  const byTeam = new Map();\n  // Data problems across all colorways.\n  const dataIssues = [];\n  // Go through each colorway's results.\n  for (const r of results) {\n    for (const m of r.milestones) {\n      // Only late, blocked or at-risk milestones go in the digest.\n      if (!['open_late', 'blocked', 'open_at_risk'].includes(m.status)) continue;\n      // First one for this team? Start its list.\n      if (!byTeam.has(m.team)) byTeam.set(m.team, []);\n      // Add the milestone, tagged with its colorway.\n      byTeam.get(m.team).push({ ...m, colorway: r.colorwayName, skuBase: r.skuBase });\n    }\n    // Collect this colorway's data issues.\n    for (const issue of r.issues || []) dataIssues.push(`  ⚠ ${r.colorwayName}: ${issue}`);\n  }\n  // Nothing to report? No message.\n  if (!byTeam.size && !dataIssues.length) return null;\n  // One section per team, teams in A–Z order.\n  const sections = [...byTeam.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([team, items]) => {\n    // Most days late first; ties broken by earliest due date.\n    items.sort((a, b) => b.daysLate - a.daysLate || String(a.due).localeCompare(String(b.due)));\n    // How many are actually late (the rest are at risk).\n    const late = items.filter(isLate).length;\n    // Section heading, e.g. \"*<team>*: 2 late, 1 at risk\".\n    const head = `*${team}*: ${late} late, ${items.length - late} at risk`;\n    // One line per milestone, up to maxPerTeam (8).\n    const rows = items.slice(0, maxPerTeam).map((i) =>\n      `  ${i.status === 'blocked' ? '⛔' : isLate(i) ? '✗' : '!'} ${i.colorway}${i.skuBase ? ` (${i.skuBase})` : ''}: ${i.label}, due ${i.due}${i.daysLate ? `, ${i.daysLate} days late` : ''}${i.note ? ` · ${i.note}` : ''}`);\n    // Too many to list? Say how many were left out.\n    if (items.length > maxPerTeam) rows.push(`  …and ${items.length - maxPerTeam} more`);\n    return [head, ...rows].join('\\n');\n  });\n  // Add a data issues section at the end, if there are any.\n  if (dataIssues.length) sections.push([`*Data issues* (fix in Airtable): ${dataIssues.length}`, ...dataIssues.slice(0, maxPerTeam)].join('\\n'));\n  // Put it all together under one title.\n  return [':calendar: *Launch critical path*: milestones late or due within a week', ...sections].join('\\n');\n}\n\n// Split a list into smaller lists of \"size\" items each, e.g. chunk([1,2,3], 2) → [[1,2],[3]].\nfunction chunk(arr, size) {\n  const out = [];\n  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));\n  return out;\n}\n// Helper: get every Airtable record from a node, joining all its pages into one list.\nconst records = (node) => $(node).all().flatMap((i) => i.json.records || []);\n// Helper: build a lookup table \"record id → fields\" for a node, for quick finds by ID.\nconst byId = (node) => new Map(records(node).map((r) => [r.id, r.fields]));\n// Helper: group child records (samples, tests, shots) by the colorway they belong to.\nconst childrenByColorway = (node) => {\n  // The lookup table we're building: colorway id → list of child records.\n  const map = new Map();\n  // Look at every child record...\n  for (const r of records(node)) {\n    // ...and every colorway it links to (a link field is a list of record IDs).\n    for (const cwId of r.fields.Colorway || []) {\n      // First time we see this colorway? Start an empty list for it.\n      if (!map.has(cwId)) map.set(cwId, []);\n      // Add this child record to that colorway's list.\n      map.get(cwId).push(r.fields);\n    }\n  }\n  // Hand back the finished lookup table.\n  return map;\n};\n\n// Build all the lookup tables once, up front.\nconst styles = byId('Load Style Master');\nconst prints = byId('Load Prints');\nconst samples = childrenByColorway('Load Samples');\nconst tests = childrenByColorway('Load Compliance Tests');\nconst shots = childrenByColorway('Load Photo Shots');\n// Today's date as \"YYYY-MM-DD\" (the first 10 characters of the ISO timestamp).\nconst today = new Date().toISOString().slice(0, 10);\n\n// The list of items this node will output.\nconst out = [];\n// Work through every colorway.\nfor (const cw of records('Load Colorways')) {\n  // Short name for this colorway's fields.\n  const f = cw.fields;\n  // Skip cancelled colorways: nothing to track.\n  if (f['Production Status'] === 'Cancelled') continue;\n  // Work out the milestones, dates and status for this colorway.\n  const result = computeCriticalPath({\n    colorway: f,\n    // The colorway's linked style (first linked ID), or null if none.\n    style: styles.get((f.Style || [])[0]) || null,\n    // The colorway's linked print (first linked ID), or null if none.\n    print: prints.get((f.Print || [])[0]) || null,\n    // This colorway's samples, tests and photo shots (empty list if none).\n    samples: samples.get(cw.id) || [],\n    tests: tests.get(cw.id) || [],\n    shots: shots.get(cw.id) || [],\n    today,\n  });\n  // Add one output item for this colorway.\n  out.push({ json: {\n    recordId: cw.id,\n    // Use the colorway's name, or its record ID if it has no name.\n    colorwayName: f.Colorway || cw.id,\n    skuBase: result.fields['SKU Base'] || null,\n    launchDate: f['Launch Date'] || null,\n    timeline: result.fields['Timeline Status'],\n    // Only the fields that changed (null if nothing changed), so we don't write needlessly.\n    patch: diffFields(f, result.fields),\n    // One row per milestone, used later for the warehouse snapshot and Slack digest.\n    milestones: result.milestones,\n    // Data problems found (e.g. no style linked).\n    issues: result.issues,\n  } });\n}\n// Send all the colorway items on to the next node.\nreturn out;\n"
+      },
+      "id": "31b95735-44cb-431a-a58b-a4c29448a052",
+      "name": "Compute Critical Path",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mode: Run Once for All Items\n// Only colorways whose computed fields changed, 10 per request (Airtable's batch limit).\n// No changes → no items → the PATCH node doesn't run (zero API calls on a quiet day).\n// ---- lib/product-model.js -------------------------------------------------\n// Product model v2: real Little Sleepies SKU structure + launch critical path.\n// Python twin for the SKU rules: python/ls_integrations/product_model.py.\n// The line below is replaced at build time with the contents of shared/product_model.json,\n// available here as PRODUCT_MODEL (divisions, size codes, compliance profiles, milestones).\nconst PRODUCT_MODEL = {\"_comment\":\"Product model v2: one source of truth for the JS (n8n, inlined at build time) and Python code. Division letters, size labels and size codes were observed on the public littlesleepies.com product feed (Oct 2026). Compliance requirements and milestone lead times are a SIMPLIFIED model for the POC: the real matrix belongs to Compliance & Integrity and the real calendar to Production.\",\"divisions\":{\"Sleep\":{\"code\":\"S\",\"fabric\":\"Lunaluxe\"},\"Play\":{\"code\":\"D\",\"fabric\":\"Soluxe\"},\"Other\":{\"code\":\"O\",\"fabric\":null}},\"sizeCodes\":{\"S\":[{\"label\":\"Preemie\",\"code\":\"10\",\"sort\":1,\"ageGroup\":\"Baby\"},{\"label\":\"Newborn\",\"code\":\"11\",\"sort\":2,\"ageGroup\":\"Baby\"},{\"label\":\"0-3 months\",\"code\":\"01\",\"sort\":3,\"ageGroup\":\"Baby\"},{\"label\":\"3-6 months\",\"code\":\"02\",\"sort\":4,\"ageGroup\":\"Baby\"},{\"label\":\"6-12 months\",\"code\":\"03\",\"sort\":5,\"ageGroup\":\"Baby\"},{\"label\":\"12-18 months\",\"code\":\"04\",\"sort\":6,\"ageGroup\":\"Baby\"},{\"label\":\"18-24 months\",\"code\":\"05\",\"sort\":7,\"ageGroup\":\"Baby\"},{\"label\":\"2T\",\"code\":\"12\",\"sort\":8,\"ageGroup\":\"Toddler\"},{\"label\":\"3T\",\"code\":\"08\",\"sort\":9,\"ageGroup\":\"Toddler\"},{\"label\":\"4T\",\"code\":\"14\",\"sort\":10,\"ageGroup\":\"Toddler\"},{\"label\":\"5/6\",\"code\":\"15\",\"sort\":11,\"ageGroup\":\"Kid\"},{\"label\":\"7/8\",\"code\":\"16\",\"sort\":12,\"ageGroup\":\"Kid\"},{\"label\":\"9/10\",\"code\":\"23\",\"sort\":13,\"ageGroup\":\"Kid\"},{\"label\":\"12/14\",\"code\":\"24\",\"sort\":14,\"ageGroup\":\"Kid\"},{\"label\":\"16\",\"code\":\"25\",\"sort\":15,\"ageGroup\":\"Kid\"},{\"label\":\"XS\",\"code\":\"22\",\"sort\":16,\"ageGroup\":\"Adult\"},{\"label\":\"S\",\"code\":\"17\",\"sort\":17,\"ageGroup\":\"Adult\"},{\"label\":\"M\",\"code\":\"18\",\"sort\":18,\"ageGroup\":\"Adult\"},{\"label\":\"L\",\"code\":\"19\",\"sort\":19,\"ageGroup\":\"Adult\"},{\"label\":\"XL\",\"code\":\"20\",\"sort\":20,\"ageGroup\":\"Adult\"},{\"label\":\"XXL\",\"code\":\"21\",\"sort\":21,\"ageGroup\":\"Adult\"},{\"label\":\"3XL\",\"code\":\"32\",\"sort\":22,\"ageGroup\":\"Adult\"},{\"label\":\"Large\",\"code\":\"27\",\"sort\":23,\"ageGroup\":\"One Size\"},{\"label\":\"Newborn - 3T\",\"code\":\"29\",\"sort\":24,\"ageGroup\":\"One Size\"}],\"D\":[{\"label\":\"0-3 months\",\"code\":\"34\",\"sort\":1,\"ageGroup\":\"Baby\"},{\"label\":\"3-6 months\",\"code\":\"35\",\"sort\":2,\"ageGroup\":\"Baby\"},{\"label\":\"6-12 months\",\"code\":\"36\",\"sort\":3,\"ageGroup\":\"Baby\"},{\"label\":\"12-18 months\",\"code\":\"37\",\"sort\":4,\"ageGroup\":\"Baby\"},{\"label\":\"18-24 months\",\"code\":\"38\",\"sort\":5,\"ageGroup\":\"Baby\"}],\"O\":[{\"label\":\"One Size\",\"code\":\"26\",\"sort\":1,\"ageGroup\":\"One Size\"}]},\"complianceProfiles\":{\"Children's Sleepwear\":[\"Lead (CPSIA)\",\"Phthalates (CPSIA)\",\"Snug-Fit Dimensions (16 CFR 1615/1616)\",\"Tracking Label\",\"Children's Product Certificate\"],\"Children's Apparel\":[\"Lead (CPSIA)\",\"Flammability (16 CFR 1610)\",\"Tracking Label\",\"Children's Product Certificate\"],\"Children's Accessory\":[\"Lead (CPSIA)\",\"Tracking Label\",\"Children's Product Certificate\"],\"Adult Apparel\":[\"Flammability (16 CFR 1610)\"]},\"milestones\":[{\"key\":\"sample\",\"label\":\"Pre-production sample approved\",\"team\":\"Production\",\"daysBeforeLaunch\":90},{\"key\":\"license\",\"label\":\"Licensor approval\",\"team\":\"Product\",\"daysBeforeLaunch\":75,\"licensedOnly\":true},{\"key\":\"compliance\",\"label\":\"Compliance tests passed\",\"team\":\"Compliance & Integrity\",\"daysBeforeLaunch\":60},{\"key\":\"photo\",\"label\":\"Photography delivered\",\"team\":\"Photography\",\"daysBeforeLaunch\":30},{\"key\":\"erp\",\"label\":\"Synced to the ERP\",\"team\":\"Systems\",\"daysBeforeLaunch\":21}],\"atRiskWindowDays\":7};\n// DIVISION-STYLE-COLORWAY[-SIZE], e.g. S-0108-0665-10 (Sleep, Zippy, colorway 0665, Preemie).\n// The colorway number is per style: the same print has a different number on each style.\n// Pattern: S, D or O, then 4 digits, then 4 digits, then optionally 2 more digits for the size.\nconst SKU_PATTERN = /^([SDO])-(\\d{4})-(\\d{4})(?:-(\\d{2}))?$/;\n\n// Turn a division letter (e.g. \"S\") into its name (e.g. \"Sleep\"), or null if unknown.\nfunction divisionByCode(code) {\n  return Object.keys(PRODUCT_MODEL.divisions).find((d) => PRODUCT_MODEL.divisions[d].code === code) || null;\n}\n\n// Build the colorway SKU (e.g. \"S-0108-0665\") from its parts. Returns null if any part is bad.\nfunction buildSkuBase({ division, styleNumber, colorwayNumber }) {\n  // The division's settings (including its letter code).\n  const d = PRODUCT_MODEL.divisions[division];\n  // Style and colorway numbers as text with spaces trimmed.\n  const style = String(styleNumber ?? '').trim();\n  const colorway = String(colorwayNumber ?? '').trim();\n  // Unknown division, or a number that isn't exactly 4 digits? Can't build a SKU.\n  if (!d || !/^\\d{4}$/.test(style) || !/^\\d{4}$/.test(colorway)) return null;\n  // Join the parts with dashes.\n  return `${d.code}-${style}-${colorway}`;\n}\n\n// Split a SKU into its parts. Returns null if it isn't a valid SKU.\nfunction parseSku(sku) {\n  // Check the SKU against the pattern; m holds the matched pieces.\n  const m = String(sku ?? '').trim().match(SKU_PATTERN);\n  // Didn't match the pattern.\n  if (!m) return null;\n  // m[1] = division letter, m[2] = style, m[3] = colorway, m[4] = size code (may be missing).\n  return { divisionCode: m[1], division: divisionByCode(m[1]), style: m[2], colorway: m[3], sizeCode: m[4] || null };\n}\n\n// Variant SKUs for a size run. Size codes depend on the division (0-3 months is 01 in Sleep, 34 in Play).\nfunction sizeRunSkus(skuBase, sizeLabels) {\n  // Split the colorway SKU into its parts.\n  const parsed = parseSku(skuBase);\n  // That division's list of sizes and their codes (empty list if unknown).\n  const table = parsed ? PRODUCT_MODEL.sizeCodes[parsed.divisionCode] || [] : [];\n  // Sizes we found a code for.\n  const variants = [];\n  // Sizes we couldn't find a code for.\n  const unknown = [];\n  // Look up each size label.\n  for (const label of sizeLabels || []) {\n    const size = table.find((s) => s.label === label);\n    // Found: add the full SKU, e.g. \"S-0108-0665-10\".\n    if (size) variants.push({ size: label, sku: `${skuBase}-${size.code}`, sort: size.sort });\n    // Not found: note it.\n    else unknown.push(label);\n  }\n  // Put the sizes in their natural order (smallest first).\n  variants.sort((a, b) => a.sort - b.sort);\n  return { variants, unknown };\n}\n\n// Turn a size code (e.g. \"10\") into its label (e.g. \"Preemie\"). Falls back to the code.\nfunction sizeLabelFor(divisionCode, sizeCode) {\n  const size = (PRODUCT_MODEL.sizeCodes[divisionCode] || []).find((s) => s.code === sizeCode);\n  return size ? size.label : sizeCode;\n}\n\n// ERPNext Item Attribute per division: the same label has different codes per division\n// (0-3 months = 01 in Sleep, 34 in Play), and an attribute value can only have one abbreviation.\nfunction sizeAttributeName(division) {\n  // e.g. \"Size (Sleep)\".\n  return `Size (${division})`;\n}\n\n// Accepts 18.5, \"18.50\", \"$1,204.99\". Returns a 2-dp number, or null if not a positive amount.\nfunction parseCost(raw) {\n  // Nothing given.\n  if (raw === null || raw === undefined) return null;\n  // Numbers stay as they are; text has \"$\", commas and spaces removed.\n  const cleaned = typeof raw === 'number' ? raw : String(raw).replace(/[$,\\s]/g, '');\n  // Empty, or not a plain number like \"12\" or \"12.50\"? Reject it.\n  if (cleaned === '' || !/^-?\\d*\\.?\\d+$/.test(String(cleaned))) return null;\n  // Convert to a number.\n  const n = Number(cleaned);\n  // Must be a real number above zero.\n  if (!Number.isFinite(n) || n <= 0) return null;\n  // Round to cents.\n  return Math.round(n * 100) / 100;\n}\n\n// ---- colorway → ERP template + size variants (LS-01) ----------------------\n// lookups: Maps of Airtable record id → fields for Style Master, Prints and Size Codes.\n// The template's item_code is the SKU base; ERPNext names each variant\n// template-code + \"-\" + attribute abbreviation, i.e. exactly S-0108-0665-10.\nfunction transformColorway({ recordId, fields = {} }, { styles, prints, sizeCodes }) {\n  // Every problem found. If this stays empty, the colorway is valid.\n  const errors = [];\n  // The linked style and print (first linked ID), or null if none.\n  const style = styles.get((fields.Style || [])[0]) || null;\n  const print = prints.get((fields.Print || [])[0]) || null;\n  // The colorway name with spaces trimmed.\n  const name = String(fields.Colorway || '').trim();\n\n  // Basic checks: approved, compliance passed, and has a name, style and print.\n  if (fields['Production Status'] !== 'Approved for Production') errors.push(`Production Status is \"${fields['Production Status'] || ''}\", expected \"Approved for Production\"`);\n  if (fields['Compliance Status'] !== 'Passed') errors.push(`Compliance Status is \"${fields['Compliance Status'] || 'not computed'}\": every required test must pass first (see the Critical Path field)`);\n  if (!name) errors.push('Colorway name is required');\n  if (!style) errors.push('No style linked');\n  if (!print) errors.push('No print linked');\n\n  // The division comes from the style (e.g. \"Sleep\").\n  const division = style ? style.Division : null;\n  // Build the colorway SKU from the division, style number and colorway number.\n  const skuBase = style ? buildSkuBase({ division, styleNumber: style['Style Number'], colorwayNumber: fields['Colorway Number'] }) : null;\n  // Couldn't build it? The colorway number must be wrong.\n  if (style && !skuBase) errors.push(`Colorway Number \"${fields['Colorway Number'] || ''}\" must be 4 digits`);\n  // Check the fabric is the right one for this division.\n  if (style && style.Fabric && !fabricMatchesDivision(division, style.Fabric)) errors.push(`${division} styles should be ${PRODUCT_MODEL.divisions[division].fabric}, not ${style.Fabric}`);\n\n  // The style's sizes: turn each linked size ID into its record, dropping any not found.\n  const runRows = style ? (style['Size Run'] || []).map((id) => sizeCodes.get(id)).filter(Boolean) : [];\n  // Any sizes that belong to a different division (a data mistake).\n  const wrongDivision = runRows.filter((s) => s.Division !== division).map((s) => s['Size Label']);\n  // No sizes at all.\n  if (style && !runRows.length) errors.push(`Style ${style['Style Number']} has no Size Run`);\n  // Sizes from the wrong division.\n  if (wrongDivision.length) errors.push(`Size Run includes ${division ? 'non-' + division : 'mismatched'} sizes: ${wrongDivision.join(', ')}`);\n  // The correct sizes, in their sort order, as labels (e.g. [\"Preemie\", \"Newborn\", …]).\n  const sizes = runRows.filter((s) => s.Division === division).sort((a, b) => a['Sort Order'] - b['Sort Order']).map((s) => s['Size Label']);\n  // Check every size has a size code.\n  const { unknown } = skuBase ? sizeRunSkus(skuBase, sizes) : { unknown: [] };\n  if (unknown.length) errors.push(`No size code for ${unknown.join(', ')} in division ${division}`);\n\n  // Cost and retail prices as clean numbers (null if bad).\n  const cost = parseCost(fields['Cost Price']);\n  const retail = style ? parseCost(style['Retail Price']) : null;\n  // Launch date as \"YYYY-MM-DD\", or null.\n  const launch = fields['Launch Date'] ? String(fields['Launch Date']).slice(0, 10) : null;\n  // Price and date checks.\n  if (cost === null) errors.push('Cost Price must be a positive amount');\n  if (style && retail === null) errors.push(`Style ${style['Style Number']} needs a Retail Price`);\n  if (!launch) errors.push('Launch Date is required');\n\n  // Valid if no problems were found.\n  const valid = errors.length === 0;\n  // The ERP size attribute for this division, e.g. \"Size (Sleep)\".\n  const attribute = division ? sizeAttributeName(division) : null;\n  // Fields shared by \"create\" and \"update\" (only built when valid).\n  const common = valid ? {\n    // Name cut to 140 characters (ERPNext's limit).\n    item_name: name.slice(0, 140),\n    item_group: division,\n    brand: 'Little Sleepies',\n    // \"<Print Name> <Style Name>. <Fiber Content>\".\n    description: `${print['Print Name']} ${style['Style Name']}. ${style['Fiber Content'] || ''}`.trim(),\n    valuation_rate: cost,\n    // Links back to Airtable so we can find this item again (keeps the sync idempotent).\n    custom_airtable_record_id: recordId,\n    // The rest are custom fields copied from the style, print and colorway.\n    custom_style_id: style['Style Number'],\n    custom_colorway_number: String(fields['Colorway Number']).trim(),\n    custom_print_name: print['Print Name'],\n    custom_print_family: print.Slug || null,\n    custom_print_category: print['Print Category'] || null,\n    custom_product_type: style['Product Type'] || null,\n    custom_fabric_type: style.Fabric || null,\n    custom_fiber_content: style['Fiber Content'] || null,\n    custom_compliance_profile: style['Compliance Profile'] || null,\n    custom_launch_date: launch,\n    // Merch date, or the launch date if there isn't one.\n    custom_merch_date: fields['Merch Date'] ? String(fields['Merch Date']).slice(0, 10) : launch,\n    custom_inventory_tier: fields['Inventory Tier'] ?? null,\n    // ERPNext checkboxes use 1/0, not true/false.\n    custom_limited_edition: fields['Limited Edition'] ? 1 : 0,\n    custom_purchase_limit: fields['Purchase Limit'] ?? null,\n    custom_retail_price: retail,\n    // Sizes stored as one text field, e.g. \"Preemie|Newborn|0-3 Months\".\n    custom_size_run: sizes.join('|'),\n  } : null;\n\n  return {\n    recordId,\n    colorwayName: name,\n    skuBase,\n    valid,\n    errors,\n    sizes,\n    approvedAt: null,\n    // Template-only fields can't change once variants exist, so updates send `common` only.\n    // Full payload for creating a new style template (null if invalid).\n    templatePayload: valid ? {\n      item_code: skuBase, stock_uom: 'Nos', is_stock_item: 1, is_purchase_item: 1, is_sales_item: 1,\n      has_variants: 1, variant_based_on: 'Item Attribute', attributes: [{ attribute }], ...common,\n    } : null,\n    // Payload for updating an existing template.\n    updatePayload: common,\n    // erpnext.controllers.item_variant.enqueue_multiple_variant_creation expects args as a JSON string.\n    // Request asking ERPNext to create one variant per size (null if invalid).\n    variantRequest: valid ? { item: skuBase, args: JSON.stringify({ [attribute]: sizes }) } : null,\n  };\n}\n\n// The list of compliance tests a profile requires, or null if the profile is unknown.\nfunction requiredTests(profile) {\n  return PRODUCT_MODEL.complianceProfiles[profile] || null;\n}\n\n// true if the fabric is the one this division expects (or the division has no rule).\nfunction fabricMatchesDivision(division, fabric) {\n  const expected = (PRODUCT_MODEL.divisions[division] || {}).fabric;\n  return !expected || expected === fabric;\n}\n\n// ---- dates (date-only, UTC) ----------------------------------------------\n// Add (or with a negative number, subtract) days from a \"YYYY-MM-DD\" date.\nfunction addDaysIso(iso, days) {\n  // Midnight UTC on that date, so time zones can't shift the day.\n  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00Z`);\n  d.setUTCDate(d.getUTCDate() + days);\n  // Back to \"YYYY-MM-DD\".\n  return d.toISOString().slice(0, 10);\n}\n// Number of days from one date to another (negative if \"to\" is earlier). 86400000 = ms in a day.\nfunction daysBetween(fromIso, toIso) {\n  return Math.round((Date.parse(`${toIso.slice(0, 10)}T00:00:00Z`) - Date.parse(`${fromIso.slice(0, 10)}T00:00:00Z`)) / 86400000);\n}\n// The latest date in a list (ignoring blanks), or null. \"YYYY-MM-DD\" dates sort correctly as text.\nconst maxDate = (dates) => dates.filter(Boolean).map((d) => String(d).slice(0, 10)).sort().pop() || null;\n\n// ---- critical path --------------------------------------------------------\n// Late = past due and not done. A blocked milestone (failed test, rejected sample) is only\n// \"late\" once it's past due; before that it's a risk. Shared by the timeline and the digest.\nconst isLate = (m) => m.status === 'open_late' || (m.status === 'blocked' && m.daysLate > 0);\n// Inputs are Airtable `fields` objects. Returns the Colorway fields to write back and one\n// row per milestone (for the warehouse snapshot and the team digest).\nfunction computeCriticalPath({ colorway, style, print, samples = [], tests = [], shots = [], today }) {\n  // Data problems found along the way.\n  const issues = [];\n  if (!style) issues.push('No style linked');\n  if (!print) issues.push('No print linked');\n  // Build the colorway SKU (null if we can't).\n  const skuBase = style\n    ? buildSkuBase({ division: style.Division, styleNumber: style['Style Number'], colorwayNumber: colorway['Colorway Number'] })\n    : null;\n  // Have a style but no SKU? The colorway number must be wrong.\n  if (style && !skuBase) issues.push(`Colorway Number \"${colorway['Colorway Number'] ?? ''}\" must be 4 digits (style ${style['Style Number']}, ${style.Division})`);\n  // Wrong fabric for the division.\n  if (style && style.Fabric && !fabricMatchesDivision(style.Division, style.Fabric)) {\n    issues.push(`${style.Division} styles should be ${PRODUCT_MODEL.divisions[style.Division].fabric}, not ${style.Fabric}`);\n  }\n\n  // Sample: the pre-production (PP) sample approval is the gate.\n  // Only the pre-production samples.\n  const pp = samples.filter((s) => s.Round === 'Pre-Production');\n  // An approved one, if any.\n  const ppApproved = pp.find((s) => s.Status === 'Approved');\n  // The most recent one (sorted by decision date, take the last). slice() copies so the original isn't reordered.\n  const ppLatest = pp.slice().sort((a, b) => String(a['Decision Date'] || '').localeCompare(String(b['Decision Date'] || ''))).pop();\n  // Overall sample status.\n  const sampleStatus = ppApproved ? 'Approved' : samples.length ? 'In Progress' : 'Not Started';\n\n  // Compliance: every test the style's profile requires must be Passed (or Not Applicable).\n  // The tests this style needs.\n  const required = style ? requiredTests(style['Compliance Profile']) : null;\n  if (style && !required) issues.push(`Unknown Compliance Profile \"${style['Compliance Profile'] ?? ''}\"`);\n  // Helper: the most recent test of one type (by result date, or submitted date if no result yet).\n  const latestOfType = (type) => tests.filter((t) => t['Test Type'] === type)\n    .sort((a, b) => String(a['Result Date'] || a['Submitted Date'] || '').localeCompare(String(b['Result Date'] || b['Submitted Date'] || ''))).pop();\n  // For each required test type, its latest test (may be missing).\n  const perType = (required || []).map((type) => ({ type, test: latestOfType(type) }));\n  // Test types whose latest result failed.\n  const failed = perType.filter((p) => p.test && p.test.Status === 'Failed').map((p) => p.type);\n  // Test types not yet passed (missing, pending or failed).\n  const missing = perType.filter((p) => !p.test || !['Passed', 'Not Applicable'].includes(p.test.Status)).map((p) => p.type);\n  // Overall compliance status.\n  const complianceStatus = !tests.length ? 'Not Started' : failed.length ? 'Failed' : required && !missing.length ? 'Passed' : 'In Testing';\n\n  // Photography: at least one shot, all delivered.\n  const photoDone = shots.length > 0 && shots.every((s) => s.Status === 'Delivered');\n  const photoStatus = photoDone ? 'Complete' : shots.length ? 'In Progress' : 'Not Started';\n\n  // Licensed prints need an extra licensor approval milestone.\n  const licensed = Boolean(print && print.License === 'Licensed');\n  // Launch date as \"YYYY-MM-DD\", or null.\n  const launch = colorway['Launch Date'] ? String(colorway['Launch Date']).slice(0, 10) : null;\n\n  // For each milestone: is it done, when, is it blocked, and any extra note.\n  const state = {\n    // Sample: done when a PP sample is approved; blocked if the latest one was rejected.\n    sample: { done: Boolean(ppApproved), completedOn: ppApproved && ppApproved['Decision Date'],\n      blocked: !ppApproved && ppLatest && ppLatest.Status === 'Rejected' ? 'Last PP sample rejected: new round needed' : null },\n    // License: done when the licensor approves; blocked if they asked for changes.\n    license: { done: print && print['Licensor Approval'] === 'Approved', completedOn: print && print['Licensor Approval Date'],\n      blocked: print && print['Licensor Approval'] === 'Changes Requested' ? 'Licensor requested changes' : null },\n    // Compliance: done when all tests pass (date = last pass); blocked if any failed; note lists what's still waiting.\n    compliance: { done: complianceStatus === 'Passed', completedOn: maxDate(tests.filter((t) => t.Status === 'Passed').map((t) => t['Result Date'])),\n      blocked: failed.length ? `Failed: ${failed.join(', ')}` : null,\n      detail: complianceStatus !== 'Passed' && missing.length && !failed.length ? `Waiting on: ${missing.join(', ')}` : null },\n    // Photo: done when all shots are delivered; note shows progress like \"2/3 shots delivered\".\n    photo: { done: photoDone, completedOn: maxDate(shots.map((s) => s['Delivered Date'])),\n      detail: !photoDone && shots.length ? `${shots.filter((s) => s.Status === 'Delivered').length}/${shots.length} shots delivered` : null },\n    // ERP: done once the colorway has synced to ERPNext.\n    erp: { done: colorway['Sync Status'] === 'Synced', completedOn: colorway['Last Synced At'] },\n  };\n\n  // Build the milestone list from the product model.\n  const milestones = PRODUCT_MODEL.milestones\n    // Skip \"licensed only\" milestones for prints that aren't licensed.\n    .filter((m) => !m.licensedOnly || licensed)\n    .map((m) => {\n      // This milestone's state from above.\n      const s = state[m.key];\n      // Due date = launch date minus this milestone's lead time (null if no launch date).\n      const due = launch ? addDaysIso(launch, -m.daysBeforeLaunch) : null;\n      // Only a finished milestone has a completion date (e.g. the last *passed* test is not\n      // \"compliance passed\" while other required tests are still pending).\n      const completedOn = s.done && s.completedOn ? String(s.completedOn).slice(0, 10) : null;\n      // Work out the status and how many days late.\n      let status;\n      let daysLate = 0;\n      // Done: late if it finished after the due date.\n      if (s.done) {\n        daysLate = completedOn && due ? Math.max(0, daysBetween(due, completedOn)) : 0;\n        status = daysLate > 0 ? 'done_late' : 'done_on_time';\n      // Not done and no due date.\n      } else if (!due) status = 'open_no_date';\n      // Not done, with a due date.\n      else {\n        // Days until due (negative = already past).\n        const daysUntil = daysBetween(today, due);\n        if (daysUntil < 0) daysLate = -daysUntil;\n        // Blocked beats everything; then late; then \"at risk\" if due soon; else on track.\n        status = s.blocked ? 'blocked' : daysUntil < 0 ? 'open_late' : daysUntil <= PRODUCT_MODEL.atRiskWindowDays ? 'open_at_risk' : 'open_on_track';\n      }\n      // One row for this milestone.\n      return { key: m.key, label: m.label, team: m.team, due, completedOn, status, daysLate, note: s.blocked || s.detail || null };\n    });\n\n  // Milestones not yet done.\n  const open = milestones.filter((m) => !m.status.startsWith('done'));\n  // Data issues (e.g. a malformed colorway number) will block the ERP sync later, so they\n  // count as risk even when every date looks fine.\n  // Overall timeline status, checked in this order.\n  const timeline = !launch ? 'No Launch Date'\n    : !open.length ? 'Complete'\n    : open.some(isLate) ? 'Late'\n    : open.some((m) => m.status === 'open_at_risk' || m.status === 'blocked') || issues.length ? 'At Risk'\n    : 'On Track';\n  // The next open milestone with the earliest due date (null if none).\n  const next = open.filter((m) => m.due).sort((a, b) => a.due.localeCompare(b.due))[0] || null;\n\n  // A symbol for each status, used in the text summary.\n  const icon = { done_on_time: '✓', done_late: '✓', open_on_track: '○', open_at_risk: '!', open_late: '✗', blocked: '⛔', open_no_date: '○' };\n  // The text summary, one line per data issue then one per milestone.\n  const lines = [\n    ...issues.map((i) => `⚠ Data: ${i}`),\n    ...milestones.map((m) => {\n      // Done: e.g. \"✓ Sample: done 2026-09-01 (3 days late)\".\n      if (m.status.startsWith('done')) return `${icon[m.status]} ${m.label}: done ${m.completedOn || '(no date)'}${m.daysLate ? ` (${m.daysLate} days late)` : ''}`;\n      // Not done: e.g. \"✗ Photo: due 2026-10-01 (<team>), 11 days late · 2/3 shots delivered\".\n      const when = m.due ? `due ${m.due}` : 'no launch date';\n      const lateness = m.status === 'open_late' || (m.status === 'blocked' && m.daysLate) ? `, ${m.daysLate} days late` : m.status === 'open_at_risk' ? ', at risk' : '';\n      return `${icon[m.status]} ${m.label}: ${when} (${m.team})${lateness}${m.note ? ` · ${m.note}` : ''}`;\n    }),\n  ];\n\n  return {\n    issues,\n    milestones,\n    // The Airtable Colorway fields to write back.\n    fields: {\n      'SKU Base': skuBase || '',\n      'Sample Status': sampleStatus,\n      'Compliance Status': complianceStatus,\n      'Photo Status': photoStatus,\n      'Timeline Status': timeline,\n      'Next Milestone': next ? `${next.label} (${next.team}), due ${next.due}` : '',\n      'Next Due Date': next ? next.due : null,\n      // The most days late of any open milestone (0 if none).\n      'Days Late': Math.max(0, ...open.map((m) => m.daysLate)),\n      'Critical Path': lines.join('\\n'),\n    },\n  };\n}\n\n// Only send fields whose value changed: saves Airtable API calls and keeps the record's\n// revision history meaningful. Airtable omits empty fields, so treat ''/null/undefined alike.\nfunction diffFields(current, computed) {\n  // Helper: treat undefined, null and '' all as null.\n  const norm = (v) => (v === undefined || v === null || v === '' ? null : v);\n  // The fields that differ.\n  const changed = {};\n  // Compare each computed field with what's in Airtable now.\n  for (const [k, v] of Object.entries(computed)) {\n    if (norm(current[k]) !== norm(v)) changed[k] = v;\n  }\n  // Return the changes, or null if nothing changed.\n  return Object.keys(changed).length ? changed : null;\n}\n\n// One Slack message for the whole portfolio, grouped by owning team (alert per cause, not\n// one ping per colorway). Returns null when nothing is late or at risk.\nfunction buildTeamDigest(results, { maxPerTeam = 8 } = {}) {\n  // team name → list of problem milestones.\n  const byTeam = new Map();\n  // Data problems across all colorways.\n  const dataIssues = [];\n  // Go through each colorway's results.\n  for (const r of results) {\n    for (const m of r.milestones) {\n      // Only late, blocked or at-risk milestones go in the digest.\n      if (!['open_late', 'blocked', 'open_at_risk'].includes(m.status)) continue;\n      // First one for this team? Start its list.\n      if (!byTeam.has(m.team)) byTeam.set(m.team, []);\n      // Add the milestone, tagged with its colorway.\n      byTeam.get(m.team).push({ ...m, colorway: r.colorwayName, skuBase: r.skuBase });\n    }\n    // Collect this colorway's data issues.\n    for (const issue of r.issues || []) dataIssues.push(`  ⚠ ${r.colorwayName}: ${issue}`);\n  }\n  // Nothing to report? No message.\n  if (!byTeam.size && !dataIssues.length) return null;\n  // One section per team, teams in A–Z order.\n  const sections = [...byTeam.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([team, items]) => {\n    // Most days late first; ties broken by earliest due date.\n    items.sort((a, b) => b.daysLate - a.daysLate || String(a.due).localeCompare(String(b.due)));\n    // How many are actually late (the rest are at risk).\n    const late = items.filter(isLate).length;\n    // Section heading, e.g. \"*<team>*: 2 late, 1 at risk\".\n    const head = `*${team}*: ${late} late, ${items.length - late} at risk`;\n    // One line per milestone, up to maxPerTeam (8).\n    const rows = items.slice(0, maxPerTeam).map((i) =>\n      `  ${i.status === 'blocked' ? '⛔' : isLate(i) ? '✗' : '!'} ${i.colorway}${i.skuBase ? ` (${i.skuBase})` : ''}: ${i.label}, due ${i.due}${i.daysLate ? `, ${i.daysLate} days late` : ''}${i.note ? ` · ${i.note}` : ''}`);\n    // Too many to list? Say how many were left out.\n    if (items.length > maxPerTeam) rows.push(`  …and ${items.length - maxPerTeam} more`);\n    return [head, ...rows].join('\\n');\n  });\n  // Add a data issues section at the end, if there are any.\n  if (dataIssues.length) sections.push([`*Data issues* (fix in Airtable): ${dataIssues.length}`, ...dataIssues.slice(0, maxPerTeam)].join('\\n'));\n  // Put it all together under one title.\n  return [':calendar: *Launch critical path*: milestones late or due within a week', ...sections].join('\\n');\n}\n\n// Split a list into smaller lists of \"size\" items each, e.g. chunk([1,2,3], 2) → [[1,2],[3]].\nfunction chunk(arr, size) {\n  const out = [];\n  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));\n  return out;\n}\n// Take every item that came into this node...\nconst updates = $input.all()\n  // ...keep only the ones that actually have something to change (\"patch\")...\n  .filter((i) => i.json.patch)\n  // ...and turn each one into the shape Airtable wants: { id, fields }.\n  .map((i) => ({ id: i.json.recordId, fields: i.json.patch }));\n// Split the list into groups of 10 and send out one item per group.\n// \"typecast: true\" lets Airtable convert values (e.g. text → date) for us.\nreturn chunk(updates, 10).map((records) => ({ json: { records, typecast: true } }));\n"
+      },
+      "id": "6c4c349a-a59c-41fa-a2a1-2c5a9b026aaf",
+      "name": "Batch Colorway Updates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Colorways",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1100
+            }
+          }
+        }
+      },
+      "id": "2a92c6e4-acb7-4f54-a943-2f4bbd0b00ae",
+      "name": "Update Colorways",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        -180
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsAirtablePatCrd",
+          "name": "Airtable PAT"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mode: Run Once for All Items\n// One warehouse row per colorway × milestone, sent as a single JSON array so the whole\n// snapshot is one INSERT (jsonb_to_recordset) instead of hundreds of round trips.\n// For each colorway (c), make one row per milestone (m), then flatten into one long list.\nconst rows = $input.all().flatMap(({ json: c }) => c.milestones.map((m) => ({\n  // Colorway details, repeated on each of its milestone rows.\n  colorway_record_id: c.recordId,\n  colorway_name: c.colorwayName,\n  sku_base: c.skuBase,\n  launch_date: c.launchDate,\n  // Milestone details.\n  milestone: m.key,\n  owner_team: m.team,\n  due_date: m.due,\n  completed_on: m.completedOn,\n  status: m.status,\n  days_late: m.daysLate,\n})));\n// If there are rows, send ONE item holding them all as JSON text. If none, send nothing.\nreturn rows.length ? [{ json: { rows: JSON.stringify(rows), count: rows.length } }] : [];\n"
+      },
+      "id": "f6fb1495-113a-40e7-a64c-cc2e599d2b10",
+      "name": "Milestone Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit.colorway_milestones\n  (run_id, colorway_record_id, colorway_name, sku_base, launch_date, milestone, owner_team, due_date, completed_on, status, days_late)\nSELECT $1, r.colorway_record_id, r.colorway_name, r.sku_base, r.launch_date::date, r.milestone, r.owner_team,\n       r.due_date::date, r.completed_on::date, r.status, r.days_late\nFROM jsonb_to_recordset($2::jsonb) AS r(colorway_record_id text, colorway_name text, sku_base text, launch_date text,\n     milestone text, owner_team text, due_date text, completed_on text, status text, days_late int);",
+        "options": {
+          "queryReplacement": "={{ [String($execution.id), $json.rows] }}"
+        }
+      },
+      "id": "93b7145e-1dc5-44f8-a53a-f903758a3459",
+      "name": "Save Milestone Snapshot",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2000,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "lsWarehousePgCrd",
+          "name": "LS Warehouse (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mode: Run Once for All Items\n// One Slack digest grouped by owning team. Nothing late or at risk → no message.\n// ---- lib/product-model.js -------------------------------------------------\n// Product model v2: real Little Sleepies SKU structure + launch critical path.\n// Python twin for the SKU rules: python/ls_integrations/product_model.py.\n// The line below is replaced at build time with the contents of shared/product_model.json,\n// available here as PRODUCT_MODEL (divisions, size codes, compliance profiles, milestones).\nconst PRODUCT_MODEL = {\"_comment\":\"Product model v2: one source of truth for the JS (n8n, inlined at build time) and Python code. Division letters, size labels and size codes were observed on the public littlesleepies.com product feed (Oct 2026). Compliance requirements and milestone lead times are a SIMPLIFIED model for the POC: the real matrix belongs to Compliance & Integrity and the real calendar to Production.\",\"divisions\":{\"Sleep\":{\"code\":\"S\",\"fabric\":\"Lunaluxe\"},\"Play\":{\"code\":\"D\",\"fabric\":\"Soluxe\"},\"Other\":{\"code\":\"O\",\"fabric\":null}},\"sizeCodes\":{\"S\":[{\"label\":\"Preemie\",\"code\":\"10\",\"sort\":1,\"ageGroup\":\"Baby\"},{\"label\":\"Newborn\",\"code\":\"11\",\"sort\":2,\"ageGroup\":\"Baby\"},{\"label\":\"0-3 months\",\"code\":\"01\",\"sort\":3,\"ageGroup\":\"Baby\"},{\"label\":\"3-6 months\",\"code\":\"02\",\"sort\":4,\"ageGroup\":\"Baby\"},{\"label\":\"6-12 months\",\"code\":\"03\",\"sort\":5,\"ageGroup\":\"Baby\"},{\"label\":\"12-18 months\",\"code\":\"04\",\"sort\":6,\"ageGroup\":\"Baby\"},{\"label\":\"18-24 months\",\"code\":\"05\",\"sort\":7,\"ageGroup\":\"Baby\"},{\"label\":\"2T\",\"code\":\"12\",\"sort\":8,\"ageGroup\":\"Toddler\"},{\"label\":\"3T\",\"code\":\"08\",\"sort\":9,\"ageGroup\":\"Toddler\"},{\"label\":\"4T\",\"code\":\"14\",\"sort\":10,\"ageGroup\":\"Toddler\"},{\"label\":\"5/6\",\"code\":\"15\",\"sort\":11,\"ageGroup\":\"Kid\"},{\"label\":\"7/8\",\"code\":\"16\",\"sort\":12,\"ageGroup\":\"Kid\"},{\"label\":\"9/10\",\"code\":\"23\",\"sort\":13,\"ageGroup\":\"Kid\"},{\"label\":\"12/14\",\"code\":\"24\",\"sort\":14,\"ageGroup\":\"Kid\"},{\"label\":\"16\",\"code\":\"25\",\"sort\":15,\"ageGroup\":\"Kid\"},{\"label\":\"XS\",\"code\":\"22\",\"sort\":16,\"ageGroup\":\"Adult\"},{\"label\":\"S\",\"code\":\"17\",\"sort\":17,\"ageGroup\":\"Adult\"},{\"label\":\"M\",\"code\":\"18\",\"sort\":18,\"ageGroup\":\"Adult\"},{\"label\":\"L\",\"code\":\"19\",\"sort\":19,\"ageGroup\":\"Adult\"},{\"label\":\"XL\",\"code\":\"20\",\"sort\":20,\"ageGroup\":\"Adult\"},{\"label\":\"XXL\",\"code\":\"21\",\"sort\":21,\"ageGroup\":\"Adult\"},{\"label\":\"3XL\",\"code\":\"32\",\"sort\":22,\"ageGroup\":\"Adult\"},{\"label\":\"Large\",\"code\":\"27\",\"sort\":23,\"ageGroup\":\"One Size\"},{\"label\":\"Newborn - 3T\",\"code\":\"29\",\"sort\":24,\"ageGroup\":\"One Size\"}],\"D\":[{\"label\":\"0-3 months\",\"code\":\"34\",\"sort\":1,\"ageGroup\":\"Baby\"},{\"label\":\"3-6 months\",\"code\":\"35\",\"sort\":2,\"ageGroup\":\"Baby\"},{\"label\":\"6-12 months\",\"code\":\"36\",\"sort\":3,\"ageGroup\":\"Baby\"},{\"label\":\"12-18 months\",\"code\":\"37\",\"sort\":4,\"ageGroup\":\"Baby\"},{\"label\":\"18-24 months\",\"code\":\"38\",\"sort\":5,\"ageGroup\":\"Baby\"}],\"O\":[{\"label\":\"One Size\",\"code\":\"26\",\"sort\":1,\"ageGroup\":\"One Size\"}]},\"complianceProfiles\":{\"Children's Sleepwear\":[\"Lead (CPSIA)\",\"Phthalates (CPSIA)\",\"Snug-Fit Dimensions (16 CFR 1615/1616)\",\"Tracking Label\",\"Children's Product Certificate\"],\"Children's Apparel\":[\"Lead (CPSIA)\",\"Flammability (16 CFR 1610)\",\"Tracking Label\",\"Children's Product Certificate\"],\"Children's Accessory\":[\"Lead (CPSIA)\",\"Tracking Label\",\"Children's Product Certificate\"],\"Adult Apparel\":[\"Flammability (16 CFR 1610)\"]},\"milestones\":[{\"key\":\"sample\",\"label\":\"Pre-production sample approved\",\"team\":\"Production\",\"daysBeforeLaunch\":90},{\"key\":\"license\",\"label\":\"Licensor approval\",\"team\":\"Product\",\"daysBeforeLaunch\":75,\"licensedOnly\":true},{\"key\":\"compliance\",\"label\":\"Compliance tests passed\",\"team\":\"Compliance & Integrity\",\"daysBeforeLaunch\":60},{\"key\":\"photo\",\"label\":\"Photography delivered\",\"team\":\"Photography\",\"daysBeforeLaunch\":30},{\"key\":\"erp\",\"label\":\"Synced to the ERP\",\"team\":\"Systems\",\"daysBeforeLaunch\":21}],\"atRiskWindowDays\":7};\n// DIVISION-STYLE-COLORWAY[-SIZE], e.g. S-0108-0665-10 (Sleep, Zippy, colorway 0665, Preemie).\n// The colorway number is per style: the same print has a different number on each style.\n// Pattern: S, D or O, then 4 digits, then 4 digits, then optionally 2 more digits for the size.\nconst SKU_PATTERN = /^([SDO])-(\\d{4})-(\\d{4})(?:-(\\d{2}))?$/;\n\n// Turn a division letter (e.g. \"S\") into its name (e.g. \"Sleep\"), or null if unknown.\nfunction divisionByCode(code) {\n  return Object.keys(PRODUCT_MODEL.divisions).find((d) => PRODUCT_MODEL.divisions[d].code === code) || null;\n}\n\n// Build the colorway SKU (e.g. \"S-0108-0665\") from its parts. Returns null if any part is bad.\nfunction buildSkuBase({ division, styleNumber, colorwayNumber }) {\n  // The division's settings (including its letter code).\n  const d = PRODUCT_MODEL.divisions[division];\n  // Style and colorway numbers as text with spaces trimmed.\n  const style = String(styleNumber ?? '').trim();\n  const colorway = String(colorwayNumber ?? '').trim();\n  // Unknown division, or a number that isn't exactly 4 digits? Can't build a SKU.\n  if (!d || !/^\\d{4}$/.test(style) || !/^\\d{4}$/.test(colorway)) return null;\n  // Join the parts with dashes.\n  return `${d.code}-${style}-${colorway}`;\n}\n\n// Split a SKU into its parts. Returns null if it isn't a valid SKU.\nfunction parseSku(sku) {\n  // Check the SKU against the pattern; m holds the matched pieces.\n  const m = String(sku ?? '').trim().match(SKU_PATTERN);\n  // Didn't match the pattern.\n  if (!m) return null;\n  // m[1] = division letter, m[2] = style, m[3] = colorway, m[4] = size code (may be missing).\n  return { divisionCode: m[1], division: divisionByCode(m[1]), style: m[2], colorway: m[3], sizeCode: m[4] || null };\n}\n\n// Variant SKUs for a size run. Size codes depend on the division (0-3 months is 01 in Sleep, 34 in Play).\nfunction sizeRunSkus(skuBase, sizeLabels) {\n  // Split the colorway SKU into its parts.\n  const parsed = parseSku(skuBase);\n  // That division's list of sizes and their codes (empty list if unknown).\n  const table = parsed ? PRODUCT_MODEL.sizeCodes[parsed.divisionCode] || [] : [];\n  // Sizes we found a code for.\n  const variants = [];\n  // Sizes we couldn't find a code for.\n  const unknown = [];\n  // Look up each size label.\n  for (const label of sizeLabels || []) {\n    const size = table.find((s) => s.label === label);\n    // Found: add the full SKU, e.g. \"S-0108-0665-10\".\n    if (size) variants.push({ size: label, sku: `${skuBase}-${size.code}`, sort: size.sort });\n    // Not found: note it.\n    else unknown.push(label);\n  }\n  // Put the sizes in their natural order (smallest first).\n  variants.sort((a, b) => a.sort - b.sort);\n  return { variants, unknown };\n}\n\n// Turn a size code (e.g. \"10\") into its label (e.g. \"Preemie\"). Falls back to the code.\nfunction sizeLabelFor(divisionCode, sizeCode) {\n  const size = (PRODUCT_MODEL.sizeCodes[divisionCode] || []).find((s) => s.code === sizeCode);\n  return size ? size.label : sizeCode;\n}\n\n// ERPNext Item Attribute per division: the same label has different codes per division\n// (0-3 months = 01 in Sleep, 34 in Play), and an attribute value can only have one abbreviation.\nfunction sizeAttributeName(division) {\n  // e.g. \"Size (Sleep)\".\n  return `Size (${division})`;\n}\n\n// Accepts 18.5, \"18.50\", \"$1,204.99\". Returns a 2-dp number, or null if not a positive amount.\nfunction parseCost(raw) {\n  // Nothing given.\n  if (raw === null || raw === undefined) return null;\n  // Numbers stay as they are; text has \"$\", commas and spaces removed.\n  const cleaned = typeof raw === 'number' ? raw : String(raw).replace(/[$,\\s]/g, '');\n  // Empty, or not a plain number like \"12\" or \"12.50\"? Reject it.\n  if (cleaned === '' || !/^-?\\d*\\.?\\d+$/.test(String(cleaned))) return null;\n  // Convert to a number.\n  const n = Number(cleaned);\n  // Must be a real number above zero.\n  if (!Number.isFinite(n) || n <= 0) return null;\n  // Round to cents.\n  return Math.round(n * 100) / 100;\n}\n\n// ---- colorway → ERP template + size variants (LS-01) ----------------------\n// lookups: Maps of Airtable record id → fields for Style Master, Prints and Size Codes.\n// The template's item_code is the SKU base; ERPNext names each variant\n// template-code + \"-\" + attribute abbreviation, i.e. exactly S-0108-0665-10.\nfunction transformColorway({ recordId, fields = {} }, { styles, prints, sizeCodes }) {\n  // Every problem found. If this stays empty, the colorway is valid.\n  const errors = [];\n  // The linked style and print (first linked ID), or null if none.\n  const style = styles.get((fields.Style || [])[0]) || null;\n  const print = prints.get((fields.Print || [])[0]) || null;\n  // The colorway name with spaces trimmed.\n  const name = String(fields.Colorway || '').trim();\n\n  // Basic checks: approved, compliance passed, and has a name, style and print.\n  if (fields['Production Status'] !== 'Approved for Production') errors.push(`Production Status is \"${fields['Production Status'] || ''}\", expected \"Approved for Production\"`);\n  if (fields['Compliance Status'] !== 'Passed') errors.push(`Compliance Status is \"${fields['Compliance Status'] || 'not computed'}\": every required test must pass first (see the Critical Path field)`);\n  if (!name) errors.push('Colorway name is required');\n  if (!style) errors.push('No style linked');\n  if (!print) errors.push('No print linked');\n\n  // The division comes from the style (e.g. \"Sleep\").\n  const division = style ? style.Division : null;\n  // Build the colorway SKU from the division, style number and colorway number.\n  const skuBase = style ? buildSkuBase({ division, styleNumber: style['Style Number'], colorwayNumber: fields['Colorway Number'] }) : null;\n  // Couldn't build it? The colorway number must be wrong.\n  if (style && !skuBase) errors.push(`Colorway Number \"${fields['Colorway Number'] || ''}\" must be 4 digits`);\n  // Check the fabric is the right one for this division.\n  if (style && style.Fabric && !fabricMatchesDivision(division, style.Fabric)) errors.push(`${division} styles should be ${PRODUCT_MODEL.divisions[division].fabric}, not ${style.Fabric}`);\n\n  // The style's sizes: turn each linked size ID into its record, dropping any not found.\n  const runRows = style ? (style['Size Run'] || []).map((id) => sizeCodes.get(id)).filter(Boolean) : [];\n  // Any sizes that belong to a different division (a data mistake).\n  const wrongDivision = runRows.filter((s) => s.Division !== division).map((s) => s['Size Label']);\n  // No sizes at all.\n  if (style && !runRows.length) errors.push(`Style ${style['Style Number']} has no Size Run`);\n  // Sizes from the wrong division.\n  if (wrongDivision.length) errors.push(`Size Run includes ${division ? 'non-' + division : 'mismatched'} sizes: ${wrongDivision.join(', ')}`);\n  // The correct sizes, in their sort order, as labels (e.g. [\"Preemie\", \"Newborn\", …]).\n  const sizes = runRows.filter((s) => s.Division === division).sort((a, b) => a['Sort Order'] - b['Sort Order']).map((s) => s['Size Label']);\n  // Check every size has a size code.\n  const { unknown } = skuBase ? sizeRunSkus(skuBase, sizes) : { unknown: [] };\n  if (unknown.length) errors.push(`No size code for ${unknown.join(', ')} in division ${division}`);\n\n  // Cost and retail prices as clean numbers (null if bad).\n  const cost = parseCost(fields['Cost Price']);\n  const retail = style ? parseCost(style['Retail Price']) : null;\n  // Launch date as \"YYYY-MM-DD\", or null.\n  const launch = fields['Launch Date'] ? String(fields['Launch Date']).slice(0, 10) : null;\n  // Price and date checks.\n  if (cost === null) errors.push('Cost Price must be a positive amount');\n  if (style && retail === null) errors.push(`Style ${style['Style Number']} needs a Retail Price`);\n  if (!launch) errors.push('Launch Date is required');\n\n  // Valid if no problems were found.\n  const valid = errors.length === 0;\n  // The ERP size attribute for this division, e.g. \"Size (Sleep)\".\n  const attribute = division ? sizeAttributeName(division) : null;\n  // Fields shared by \"create\" and \"update\" (only built when valid).\n  const common = valid ? {\n    // Name cut to 140 characters (ERPNext's limit).\n    item_name: name.slice(0, 140),\n    item_group: division,\n    brand: 'Little Sleepies',\n    // \"<Print Name> <Style Name>. <Fiber Content>\".\n    description: `${print['Print Name']} ${style['Style Name']}. ${style['Fiber Content'] || ''}`.trim(),\n    valuation_rate: cost,\n    // Links back to Airtable so we can find this item again (keeps the sync idempotent).\n    custom_airtable_record_id: recordId,\n    // The rest are custom fields copied from the style, print and colorway.\n    custom_style_id: style['Style Number'],\n    custom_colorway_number: String(fields['Colorway Number']).trim(),\n    custom_print_name: print['Print Name'],\n    custom_print_family: print.Slug || null,\n    custom_print_category: print['Print Category'] || null,\n    custom_product_type: style['Product Type'] || null,\n    custom_fabric_type: style.Fabric || null,\n    custom_fiber_content: style['Fiber Content'] || null,\n    custom_compliance_profile: style['Compliance Profile'] || null,\n    custom_launch_date: launch,\n    // Merch date, or the launch date if there isn't one.\n    custom_merch_date: fields['Merch Date'] ? String(fields['Merch Date']).slice(0, 10) : launch,\n    custom_inventory_tier: fields['Inventory Tier'] ?? null,\n    // ERPNext checkboxes use 1/0, not true/false.\n    custom_limited_edition: fields['Limited Edition'] ? 1 : 0,\n    custom_purchase_limit: fields['Purchase Limit'] ?? null,\n    custom_retail_price: retail,\n    // Sizes stored as one text field, e.g. \"Preemie|Newborn|0-3 Months\".\n    custom_size_run: sizes.join('|'),\n  } : null;\n\n  return {\n    recordId,\n    colorwayName: name,\n    skuBase,\n    valid,\n    errors,\n    sizes,\n    approvedAt: null,\n    // Template-only fields can't change once variants exist, so updates send `common` only.\n    // Full payload for creating a new style template (null if invalid).\n    templatePayload: valid ? {\n      item_code: skuBase, stock_uom: 'Nos', is_stock_item: 1, is_purchase_item: 1, is_sales_item: 1,\n      has_variants: 1, variant_based_on: 'Item Attribute', attributes: [{ attribute }], ...common,\n    } : null,\n    // Payload for updating an existing template.\n    updatePayload: common,\n    // erpnext.controllers.item_variant.enqueue_multiple_variant_creation expects args as a JSON string.\n    // Request asking ERPNext to create one variant per size (null if invalid).\n    variantRequest: valid ? { item: skuBase, args: JSON.stringify({ [attribute]: sizes }) } : null,\n  };\n}\n\n// The list of compliance tests a profile requires, or null if the profile is unknown.\nfunction requiredTests(profile) {\n  return PRODUCT_MODEL.complianceProfiles[profile] || null;\n}\n\n// true if the fabric is the one this division expects (or the division has no rule).\nfunction fabricMatchesDivision(division, fabric) {\n  const expected = (PRODUCT_MODEL.divisions[division] || {}).fabric;\n  return !expected || expected === fabric;\n}\n\n// ---- dates (date-only, UTC) ----------------------------------------------\n// Add (or with a negative number, subtract) days from a \"YYYY-MM-DD\" date.\nfunction addDaysIso(iso, days) {\n  // Midnight UTC on that date, so time zones can't shift the day.\n  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00Z`);\n  d.setUTCDate(d.getUTCDate() + days);\n  // Back to \"YYYY-MM-DD\".\n  return d.toISOString().slice(0, 10);\n}\n// Number of days from one date to another (negative if \"to\" is earlier). 86400000 = ms in a day.\nfunction daysBetween(fromIso, toIso) {\n  return Math.round((Date.parse(`${toIso.slice(0, 10)}T00:00:00Z`) - Date.parse(`${fromIso.slice(0, 10)}T00:00:00Z`)) / 86400000);\n}\n// The latest date in a list (ignoring blanks), or null. \"YYYY-MM-DD\" dates sort correctly as text.\nconst maxDate = (dates) => dates.filter(Boolean).map((d) => String(d).slice(0, 10)).sort().pop() || null;\n\n// ---- critical path --------------------------------------------------------\n// Late = past due and not done. A blocked milestone (failed test, rejected sample) is only\n// \"late\" once it's past due; before that it's a risk. Shared by the timeline and the digest.\nconst isLate = (m) => m.status === 'open_late' || (m.status === 'blocked' && m.daysLate > 0);\n// Inputs are Airtable `fields` objects. Returns the Colorway fields to write back and one\n// row per milestone (for the warehouse snapshot and the team digest).\nfunction computeCriticalPath({ colorway, style, print, samples = [], tests = [], shots = [], today }) {\n  // Data problems found along the way.\n  const issues = [];\n  if (!style) issues.push('No style linked');\n  if (!print) issues.push('No print linked');\n  // Build the colorway SKU (null if we can't).\n  const skuBase = style\n    ? buildSkuBase({ division: style.Division, styleNumber: style['Style Number'], colorwayNumber: colorway['Colorway Number'] })\n    : null;\n  // Have a style but no SKU? The colorway number must be wrong.\n  if (style && !skuBase) issues.push(`Colorway Number \"${colorway['Colorway Number'] ?? ''}\" must be 4 digits (style ${style['Style Number']}, ${style.Division})`);\n  // Wrong fabric for the division.\n  if (style && style.Fabric && !fabricMatchesDivision(style.Division, style.Fabric)) {\n    issues.push(`${style.Division} styles should be ${PRODUCT_MODEL.divisions[style.Division].fabric}, not ${style.Fabric}`);\n  }\n\n  // Sample: the pre-production (PP) sample approval is the gate.\n  // Only the pre-production samples.\n  const pp = samples.filter((s) => s.Round === 'Pre-Production');\n  // An approved one, if any.\n  const ppApproved = pp.find((s) => s.Status === 'Approved');\n  // The most recent one (sorted by decision date, take the last). slice() copies so the original isn't reordered.\n  const ppLatest = pp.slice().sort((a, b) => String(a['Decision Date'] || '').localeCompare(String(b['Decision Date'] || ''))).pop();\n  // Overall sample status.\n  const sampleStatus = ppApproved ? 'Approved' : samples.length ? 'In Progress' : 'Not Started';\n\n  // Compliance: every test the style's profile requires must be Passed (or Not Applicable).\n  // The tests this style needs.\n  const required = style ? requiredTests(style['Compliance Profile']) : null;\n  if (style && !required) issues.push(`Unknown Compliance Profile \"${style['Compliance Profile'] ?? ''}\"`);\n  // Helper: the most recent test of one type (by result date, or submitted date if no result yet).\n  const latestOfType = (type) => tests.filter((t) => t['Test Type'] === type)\n    .sort((a, b) => String(a['Result Date'] || a['Submitted Date'] || '').localeCompare(String(b['Result Date'] || b['Submitted Date'] || ''))).pop();\n  // For each required test type, its latest test (may be missing).\n  const perType = (required || []).map((type) => ({ type, test: latestOfType(type) }));\n  // Test types whose latest result failed.\n  const failed = perType.filter((p) => p.test && p.test.Status === 'Failed').map((p) => p.type);\n  // Test types not yet passed (missing, pending or failed).\n  const missing = perType.filter((p) => !p.test || !['Passed', 'Not Applicable'].includes(p.test.Status)).map((p) => p.type);\n  // Overall compliance status.\n  const complianceStatus = !tests.length ? 'Not Started' : failed.length ? 'Failed' : required && !missing.length ? 'Passed' : 'In Testing';\n\n  // Photography: at least one shot, all delivered.\n  const photoDone = shots.length > 0 && shots.every((s) => s.Status === 'Delivered');\n  const photoStatus = photoDone ? 'Complete' : shots.length ? 'In Progress' : 'Not Started';\n\n  // Licensed prints need an extra licensor approval milestone.\n  const licensed = Boolean(print && print.License === 'Licensed');\n  // Launch date as \"YYYY-MM-DD\", or null.\n  const launch = colorway['Launch Date'] ? String(colorway['Launch Date']).slice(0, 10) : null;\n\n  // For each milestone: is it done, when, is it blocked, and any extra note.\n  const state = {\n    // Sample: done when a PP sample is approved; blocked if the latest one was rejected.\n    sample: { done: Boolean(ppApproved), completedOn: ppApproved && ppApproved['Decision Date'],\n      blocked: !ppApproved && ppLatest && ppLatest.Status === 'Rejected' ? 'Last PP sample rejected: new round needed' : null },\n    // License: done when the licensor approves; blocked if they asked for changes.\n    license: { done: print && print['Licensor Approval'] === 'Approved', completedOn: print && print['Licensor Approval Date'],\n      blocked: print && print['Licensor Approval'] === 'Changes Requested' ? 'Licensor requested changes' : null },\n    // Compliance: done when all tests pass (date = last pass); blocked if any failed; note lists what's still waiting.\n    compliance: { done: complianceStatus === 'Passed', completedOn: maxDate(tests.filter((t) => t.Status === 'Passed').map((t) => t['Result Date'])),\n      blocked: failed.length ? `Failed: ${failed.join(', ')}` : null,\n      detail: complianceStatus !== 'Passed' && missing.length && !failed.length ? `Waiting on: ${missing.join(', ')}` : null },\n    // Photo: done when all shots are delivered; note shows progress like \"2/3 shots delivered\".\n    photo: { done: photoDone, completedOn: maxDate(shots.map((s) => s['Delivered Date'])),\n      detail: !photoDone && shots.length ? `${shots.filter((s) => s.Status === 'Delivered').length}/${shots.length} shots delivered` : null },\n    // ERP: done once the colorway has synced to ERPNext.\n    erp: { done: colorway['Sync Status'] === 'Synced', completedOn: colorway['Last Synced At'] },\n  };\n\n  // Build the milestone list from the product model.\n  const milestones = PRODUCT_MODEL.milestones\n    // Skip \"licensed only\" milestones for prints that aren't licensed.\n    .filter((m) => !m.licensedOnly || licensed)\n    .map((m) => {\n      // This milestone's state from above.\n      const s = state[m.key];\n      // Due date = launch date minus this milestone's lead time (null if no launch date).\n      const due = launch ? addDaysIso(launch, -m.daysBeforeLaunch) : null;\n      // Only a finished milestone has a completion date (e.g. the last *passed* test is not\n      // \"compliance passed\" while other required tests are still pending).\n      const completedOn = s.done && s.completedOn ? String(s.completedOn).slice(0, 10) : null;\n      // Work out the status and how many days late.\n      let status;\n      let daysLate = 0;\n      // Done: late if it finished after the due date.\n      if (s.done) {\n        daysLate = completedOn && due ? Math.max(0, daysBetween(due, completedOn)) : 0;\n        status = daysLate > 0 ? 'done_late' : 'done_on_time';\n      // Not done and no due date.\n      } else if (!due) status = 'open_no_date';\n      // Not done, with a due date.\n      else {\n        // Days until due (negative = already past).\n        const daysUntil = daysBetween(today, due);\n        if (daysUntil < 0) daysLate = -daysUntil;\n        // Blocked beats everything; then late; then \"at risk\" if due soon; else on track.\n        status = s.blocked ? 'blocked' : daysUntil < 0 ? 'open_late' : daysUntil <= PRODUCT_MODEL.atRiskWindowDays ? 'open_at_risk' : 'open_on_track';\n      }\n      // One row for this milestone.\n      return { key: m.key, label: m.label, team: m.team, due, completedOn, status, daysLate, note: s.blocked || s.detail || null };\n    });\n\n  // Milestones not yet done.\n  const open = milestones.filter((m) => !m.status.startsWith('done'));\n  // Data issues (e.g. a malformed colorway number) will block the ERP sync later, so they\n  // count as risk even when every date looks fine.\n  // Overall timeline status, checked in this order.\n  const timeline = !launch ? 'No Launch Date'\n    : !open.length ? 'Complete'\n    : open.some(isLate) ? 'Late'\n    : open.some((m) => m.status === 'open_at_risk' || m.status === 'blocked') || issues.length ? 'At Risk'\n    : 'On Track';\n  // The next open milestone with the earliest due date (null if none).\n  const next = open.filter((m) => m.due).sort((a, b) => a.due.localeCompare(b.due))[0] || null;\n\n  // A symbol for each status, used in the text summary.\n  const icon = { done_on_time: '✓', done_late: '✓', open_on_track: '○', open_at_risk: '!', open_late: '✗', blocked: '⛔', open_no_date: '○' };\n  // The text summary, one line per data issue then one per milestone.\n  const lines = [\n    ...issues.map((i) => `⚠ Data: ${i}`),\n    ...milestones.map((m) => {\n      // Done: e.g. \"✓ Sample: done 2026-09-01 (3 days late)\".\n      if (m.status.startsWith('done')) return `${icon[m.status]} ${m.label}: done ${m.completedOn || '(no date)'}${m.daysLate ? ` (${m.daysLate} days late)` : ''}`;\n      // Not done: e.g. \"✗ Photo: due 2026-10-01 (<team>), 11 days late · 2/3 shots delivered\".\n      const when = m.due ? `due ${m.due}` : 'no launch date';\n      const lateness = m.status === 'open_late' || (m.status === 'blocked' && m.daysLate) ? `, ${m.daysLate} days late` : m.status === 'open_at_risk' ? ', at risk' : '';\n      return `${icon[m.status]} ${m.label}: ${when} (${m.team})${lateness}${m.note ? ` · ${m.note}` : ''}`;\n    }),\n  ];\n\n  return {\n    issues,\n    milestones,\n    // The Airtable Colorway fields to write back.\n    fields: {\n      'SKU Base': skuBase || '',\n      'Sample Status': sampleStatus,\n      'Compliance Status': complianceStatus,\n      'Photo Status': photoStatus,\n      'Timeline Status': timeline,\n      'Next Milestone': next ? `${next.label} (${next.team}), due ${next.due}` : '',\n      'Next Due Date': next ? next.due : null,\n      // The most days late of any open milestone (0 if none).\n      'Days Late': Math.max(0, ...open.map((m) => m.daysLate)),\n      'Critical Path': lines.join('\\n'),\n    },\n  };\n}\n\n// Only send fields whose value changed: saves Airtable API calls and keeps the record's\n// revision history meaningful. Airtable omits empty fields, so treat ''/null/undefined alike.\nfunction diffFields(current, computed) {\n  // Helper: treat undefined, null and '' all as null.\n  const norm = (v) => (v === undefined || v === null || v === '' ? null : v);\n  // The fields that differ.\n  const changed = {};\n  // Compare each computed field with what's in Airtable now.\n  for (const [k, v] of Object.entries(computed)) {\n    if (norm(current[k]) !== norm(v)) changed[k] = v;\n  }\n  // Return the changes, or null if nothing changed.\n  return Object.keys(changed).length ? changed : null;\n}\n\n// One Slack message for the whole portfolio, grouped by owning team (alert per cause, not\n// one ping per colorway). Returns null when nothing is late or at risk.\nfunction buildTeamDigest(results, { maxPerTeam = 8 } = {}) {\n  // team name → list of problem milestones.\n  const byTeam = new Map();\n  // Data problems across all colorways.\n  const dataIssues = [];\n  // Go through each colorway's results.\n  for (const r of results) {\n    for (const m of r.milestones) {\n      // Only late, blocked or at-risk milestones go in the digest.\n      if (!['open_late', 'blocked', 'open_at_risk'].includes(m.status)) continue;\n      // First one for this team? Start its list.\n      if (!byTeam.has(m.team)) byTeam.set(m.team, []);\n      // Add the milestone, tagged with its colorway.\n      byTeam.get(m.team).push({ ...m, colorway: r.colorwayName, skuBase: r.skuBase });\n    }\n    // Collect this colorway's data issues.\n    for (const issue of r.issues || []) dataIssues.push(`  ⚠ ${r.colorwayName}: ${issue}`);\n  }\n  // Nothing to report? No message.\n  if (!byTeam.size && !dataIssues.length) return null;\n  // One section per team, teams in A–Z order.\n  const sections = [...byTeam.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([team, items]) => {\n    // Most days late first; ties broken by earliest due date.\n    items.sort((a, b) => b.daysLate - a.daysLate || String(a.due).localeCompare(String(b.due)));\n    // How many are actually late (the rest are at risk).\n    const late = items.filter(isLate).length;\n    // Section heading, e.g. \"*<team>*: 2 late, 1 at risk\".\n    const head = `*${team}*: ${late} late, ${items.length - late} at risk`;\n    // One line per milestone, up to maxPerTeam (8).\n    const rows = items.slice(0, maxPerTeam).map((i) =>\n      `  ${i.status === 'blocked' ? '⛔' : isLate(i) ? '✗' : '!'} ${i.colorway}${i.skuBase ? ` (${i.skuBase})` : ''}: ${i.label}, due ${i.due}${i.daysLate ? `, ${i.daysLate} days late` : ''}${i.note ? ` · ${i.note}` : ''}`);\n    // Too many to list? Say how many were left out.\n    if (items.length > maxPerTeam) rows.push(`  …and ${items.length - maxPerTeam} more`);\n    return [head, ...rows].join('\\n');\n  });\n  // Add a data issues section at the end, if there are any.\n  if (dataIssues.length) sections.push([`*Data issues* (fix in Airtable): ${dataIssues.length}`, ...dataIssues.slice(0, maxPerTeam)].join('\\n'));\n  // Put it all together under one title.\n  return [':calendar: *Launch critical path*: milestones late or due within a week', ...sections].join('\\n');\n}\n\n// Split a list into smaller lists of \"size\" items each, e.g. chunk([1,2,3], 2) → [[1,2],[3]].\nfunction chunk(arr, size) {\n  const out = [];\n  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));\n  return out;\n}\n// Collect every colorway's results and build one Slack message (or null if all is fine).\nconst text = buildTeamDigest($input.all().map((i) => i.json));\n// Message? Send one item with it. No message? Send nothing, so Slack isn't called.\nreturn text ? [{ json: { slack_text: text } }] : [];\n"
+      },
+      "id": "ad4c1a84-473b-4730-adf0-66fde5f84bf6",
+      "name": "Team Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "85d0cf1b-09b5-4757-afa2-9423b09025f6",
+              "leftValue": "={{ $env.SLACK_WEBHOOK_URL && $json.slack_text ? 'yes' : '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8b9d45f8-0d0c-4ad6-a893-05ef775dd24f",
+      "name": "Alert Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.slack_text }) }}",
+        "options": {}
+      },
+      "id": "73f6fb0e-cd0f-40ba-aa68-f39d6c6491e6",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2220,
+        180
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Weekdays 13:00 UTC": {
+      "main": [
+        [
+          {
+            "node": "Load Colorways",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Colorways": {
+      "main": [
+        [
+          {
+            "node": "Load Style Master",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Style Master": {
+      "main": [
+        [
+          {
+            "node": "Load Prints",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Prints": {
+      "main": [
+        [
+          {
+            "node": "Load Samples",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Samples": {
+      "main": [
+        [
+          {
+            "node": "Load Compliance Tests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Compliance Tests": {
+      "main": [
+        [
+          {
+            "node": "Load Photo Shots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Photo Shots": {
+      "main": [
+        [
+          {
+            "node": "Compute Critical Path",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Critical Path": {
+      "main": [
+        [
+          {
+            "node": "Batch Colorway Updates",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Milestone Snapshot",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Team Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch Colorway Updates": {
+      "main": [
+        [
+          {
+            "node": "Update Colorways",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Milestone Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Save Milestone Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Team Digest": {
+      "main": [
+        [
+          {
+            "node": "Alert Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Needed?": {
+      "main": [
+        [
+          {
+            "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "lsWf00ErrorHndlr"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}

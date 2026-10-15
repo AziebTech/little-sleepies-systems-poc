@@ -1,0 +1,39 @@
+{
+  "_comment": "Seed for product model v2. Style numbers, product types, fabrics, size runs and prices mirror the public littlesleepies.com storefront; PRINTS and COLORWAY NUMBERS (09xx) are fictional. Each colorway's `state` drives generated Samples / Compliance Tests / Photo Shots with dates relative to today, so the critical path always shows a realistic mix of on-track, at-risk, late and complete.",
+  "styles": [
+    { "number": "0108", "name": "Zippy", "division": "Sleep", "productType": "Zippy", "fabric": "Lunaluxe", "fiber": "95% viscose from bamboo, 5% spandex", "retail": 36, "profile": "Children's Sleepwear", "ages": ["Baby", "Toddler"], "sizes": ["Preemie", "Newborn", "0-3 months", "3-6 months", "6-12 months", "12-18 months", "18-24 months", "2T", "3T"] },
+    { "number": "0110", "name": "Two-Piece Pajama Set", "division": "Sleep", "productType": "LS/P PJ Set", "fabric": "Lunaluxe", "fiber": "95% viscose from bamboo, 5% spandex", "retail": 38, "profile": "Children's Sleepwear", "ages": ["Toddler", "Kid"], "sizes": ["12-18 months", "18-24 months", "2T", "3T", "4T", "5/6", "7/8", "9/10", "12/14", "16"] },
+    { "number": "0131", "name": "Women's Pajama Pants", "division": "Sleep", "productType": "Women's PJ Pants", "fabric": "Lunaluxe", "fiber": "95% viscose from bamboo, 5% spandex", "retail": 36, "profile": "Adult Apparel", "ages": ["Adult"], "sizes": ["XS", "S", "M", "L", "XL", "XXL", "3XL"] },
+    { "number": "0365", "name": "Women's Pajama Top", "division": "Sleep", "productType": "Women's Crew LS PJ Tops", "fabric": "Lunaluxe", "fiber": "95% viscose from bamboo, 5% spandex", "retail": 36, "profile": "Adult Apparel", "ages": ["Adult"], "sizes": ["XS", "S", "M", "L", "XL", "XXL", "3XL"] },
+    { "number": "0835", "name": "Men's Pajama Top", "division": "Sleep", "productType": "Men's V2 LS PJ Tops", "fabric": "Lunaluxe", "fiber": "95% viscose from bamboo, 5% spandex", "retail": 38, "profile": "Adult Apparel", "ages": ["Adult"], "sizes": ["XS", "S", "M", "L", "XL", "XXL", "3XL"] },
+    { "number": "0836", "name": "Men's Pajama Pants", "division": "Sleep", "productType": "Men's V2 PJ Pants", "fabric": "Lunaluxe", "fiber": "95% viscose from bamboo, 5% spandex", "retail": 38, "profile": "Adult Apparel", "ages": ["Adult"], "sizes": ["XS", "S", "M", "L", "XL", "XXL", "3XL"] },
+    { "number": "0060", "name": "Dress with Bloomer", "division": "Play", "productType": "Play Dress W/B Pocketless", "fabric": "Soluxe", "fiber": "70% viscose from bamboo, 25% cotton, 5% spandex", "retail": 42, "profile": "Children's Apparel", "ages": ["Baby"], "sizes": ["0-3 months", "3-6 months", "6-12 months", "12-18 months", "18-24 months"] },
+    { "number": "0132", "name": "Large Cloud Blanket", "division": "Sleep", "productType": "Blanket", "fabric": "Lunaluxe", "fiber": "95% viscose from bamboo, 5% spandex", "retail": 75, "profile": "Children's Accessory", "ages": ["Toddler", "Kid"], "sizes": ["Large"] },
+    { "number": "0179", "name": "Sleepyhead Lovey", "division": "Other", "productType": "Lovey", "fabric": "Lunaluxe", "fiber": "95% viscose from bamboo, 5% spandex", "retail": 28, "profile": "Children's Accessory", "ages": ["Baby", "Toddler"], "sizes": ["One Size"] }
+  ],
+  "prints": [
+    { "name": "Midnight Moons", "slug": "midnight-moons", "category": "Celestial", "theme": "Fall Favorites", "license": "None" },
+    { "name": "Sage Botanicals", "slug": "sage-botanicals", "category": "Florals", "theme": "Floral Shop", "license": "None" },
+    { "name": "Woodland Fox", "slug": "woodland-fox", "category": "Animals", "theme": "Fall Favorites", "license": "None" },
+    { "name": "Snowy Pines", "slug": "snowy-pines", "category": "Holiday", "theme": "Holiday Shop", "license": "None" },
+    { "name": "Rainbow Stripes", "slug": "rainbow-stripes", "category": "Stripes & Solids", "theme": "Everyday", "license": "None" },
+    { "name": "Dino Dig", "slug": "dino-dig", "category": "Animals", "theme": "Everyday", "license": "None" },
+    { "name": "Storybook Bears", "slug": "storybook-bears", "category": "Licensed", "theme": "Character Shop", "license": "Licensed", "licensor": "Example Studios (fictional)", "licensorApproval": "Submitted" }
+  ],
+  "colorways": [
+    { "print": "Midnight Moons", "style": "0108", "colorway": "0901", "launchInDays": 100, "tier": 1, "limited": false, "cost": 9.80, "state": { "sample": "approved", "compliance": "in_testing", "photo": "none" } },
+    { "print": "Midnight Moons", "style": "0110", "colorway": "0902", "launchInDays": 100, "tier": 2, "limited": false, "cost": 10.40, "state": { "sample": "approved", "compliance": "in_testing", "photo": "none" } },
+    { "print": "Midnight Moons", "style": "0131", "colorway": "0903", "launchInDays": 100, "tier": 4, "limited": false, "cost": 10.10, "state": { "sample": "approved", "compliance": "passed", "photo": "none" } },
+    { "print": "Midnight Moons", "style": "0836", "colorway": "0904", "launchInDays": 100, "tier": 5, "limited": false, "cost": 10.60, "state": { "sample": "pp_rejected", "compliance": "none", "photo": "none" } },
+    { "print": "Sage Botanicals", "style": "0108", "colorway": "0905", "launchInDays": 40, "tier": 2, "limited": false, "cost": 9.80, "state": { "sample": "approved", "compliance": "in_testing", "photo": "partial" } },
+    { "print": "Sage Botanicals", "style": "0060", "colorway": "0906", "launchInDays": 40, "tier": 4, "limited": false, "cost": 11.20, "state": { "sample": "approved", "compliance": "failed_lead", "photo": "planned" } },
+    { "print": "Woodland Fox", "style": "0108", "colorway": "0907", "launchInDays": 25, "tier": 1, "limited": true, "cost": 9.80, "state": { "sample": "approved", "compliance": "passed", "photo": "partial" } },
+    { "print": "Woodland Fox", "style": "0132", "colorway": "0908", "launchInDays": 25, "tier": 6, "limited": true, "cost": 24.50, "state": { "sample": "approved", "compliance": "passed", "photo": "delivered" } },
+    { "print": "Snowy Pines", "style": "0110", "colorway": "0909", "launchInDays": 65, "tier": 1, "limited": true, "cost": 10.40, "state": { "sample": "approved", "compliance": "in_testing", "photo": "none" } },
+    { "print": "Snowy Pines", "style": "0179", "colorway": "0910", "launchInDays": 65, "tier": 4, "limited": true, "cost": 7.90, "state": { "sample": "approved", "compliance": "passed", "photo": "none" } },
+    { "print": "Rainbow Stripes", "style": "0108", "colorway": "0911", "launchInDays": -5, "tier": 3, "limited": false, "cost": 9.80, "state": { "sample": "approved", "compliance": "passed", "photo": "delivered", "synced": true } },
+    { "print": "Dino Dig", "style": "0110", "colorway": "0912", "launchInDays": 150, "tier": 3, "limited": false, "cost": 10.40, "state": { "sample": "none", "compliance": "none", "photo": "none" } },
+    { "print": "Storybook Bears", "style": "0108", "colorway": "0913", "launchInDays": 80, "tier": 1, "limited": true, "cost": 11.90, "state": { "sample": "approved", "compliance": "in_testing", "photo": "none" } },
+    { "print": "Dino Dig", "style": "0835", "colorway": "91", "launchInDays": 120, "tier": 5, "limited": false, "cost": 10.60, "state": { "sample": "proto", "compliance": "none", "photo": "none" }, "_note": "deliberate data issue: colorway number is not 4 digits" }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "little-sleepies-systems-poc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Airtable <-> n8n <-> ERPNext (NetSuite stand-in) <-> Postgres (Snowflake stand-in) integration POC",
+  "type": "module",
+  "scripts": {
+    "build": "node n8n/build-workflows.mjs",
+    "test": "node --test \"tests/js/*.test.mjs\"",
+    "test:py": "docker compose --profile tools run --rm tools python -m pytest -q",
+    "up": "docker compose up -d",
+    "down": "docker compose down",
+    "n8n:import": "node n8n/generate-credentials.mjs | docker compose exec -T n8n sh -c \"cat > /tmp/creds.json && n8n import:credentials --input=/tmp/creds.json; rc=$?; rm -f /tmp/creds.json; exit $rc\" && docker compose exec n8n n8n import:workflow --separate --input=/workflows",
+    "n8n:export": "docker compose exec n8n n8n export:workflow --all --separate --output=/home/node/.n8n/exports"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

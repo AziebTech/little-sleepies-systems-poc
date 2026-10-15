@@ -1,0 +1,18 @@
+# Copy to dbt/profiles.yml (gitignored). Run from the dbt/ folder:
+#   docker run --rm --network little-sleepies-proof-of-concept_ls_net -v "${PWD}:/usr/app" -w /usr/app \
+#     ghcr.io/dbt-labs/dbt-postgres:1.9.latest build --profiles-dir .
+#
+# Swapping to Snowflake is a profile change (type: snowflake, account, role, warehouse) —
+# the models use only cross-database SQL plus dbt macros.
+ls_ops:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: warehouse        # docker network hostname; use localhost + port 5433 from the host
+      port: 5432
+      user: ls_admin
+      password: ls_admin_pw
+      dbname: ls_warehouse
+      schema: dbt
+      threads: 2

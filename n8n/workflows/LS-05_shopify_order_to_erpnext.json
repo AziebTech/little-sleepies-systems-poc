@@ -1,0 +1,970 @@
+{
+  "id": "lsWf05ShopifyOrd",
+  "name": "LS-05 Shopify Order → ERPNext: Sales Order",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## LS-05 Shopify order → ERPNext Sales Order\n**Trigger A:** Shopify `orders/create` webhook. **HMAC-verified over the raw body** before anything else.\n**Trigger B (hourly):** (1) pages through ALL orders from the last 6h, skipping ones the audit log shows as imported (missed webhooks); (2) re-fetches held/failed orders **by ID** (up to 7 days) so retries don't depend on volume.\n\n**Idempotent:** external ID = Shopify order GID (`custom_shopify_order_id`). Shopify retries webhooks, so duplicates are expected.\n\n**On hold** (not imported) if any SKU is missing, unknown or disabled in the ERP. Alert once, retry quietly.\n\nNever use the numeric `id`: it exceeds JS safe integers.",
+        "width": 520,
+        "height": 380
+      },
+      "id": "9694a1a7-72cc-4507-a497-824f0c12286b",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "shopify-orders",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "0a111791-dfea-45a2-a03d-5d86b749ea80",
+      "name": "Shopify orders/create",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "3204c138-e2af-4bf8-af30-2955680a7a6f"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "c074659d-2c36-4316-a493-363f4fec6c1a",
+      "name": "Hourly Reconcile",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "02ac36c8-ff38-473d-a6e3-f6aaec114e49",
+              "leftValue": "={{ $env.SHOPIFY_STORE_DOMAIN && $env.SHOPIFY_CLIENT_ID ? 'yes' : '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "103b479a-4407-4e3c-a378-ba2eb2ac66c7",
+      "name": "Shopify Configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        220,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.SHOPIFY_STORE_DOMAIN || '').startsWith('http') ? $env.SHOPIFY_STORE_DOMAIN : 'https://' + $env.SHOPIFY_STORE_DOMAIN }}/admin/oauth/access_token",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "name": "client_id",
+              "value": "={{ $env.SHOPIFY_CLIENT_ID }}"
+            },
+            {
+              "name": "client_secret",
+              "value": "={{ $env.SHOPIFY_CLIENT_SECRET }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c82e66e5-23be-404d-a2cb-85f185b089d5",
+      "name": "Get Shopify Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT DISTINCT ON (entity_id) entity_id AS order_gid, status, action\nFROM audit.sync_audit_logs\nWHERE source_system = 'shopify' AND entity_type = 'sales_order' AND created_at > now() - interval '7 days'\nORDER BY entity_id, created_at DESC;",
+        "options": {}
+      },
+      "id": "ec70265c-7976-4bbf-a2f9-51e05d18972d",
+      "name": "Load Order Sync State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        660,
+        320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "lsWarehousePgCrd",
+          "name": "LS Warehouse (Postgres)"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mode: Run Once for All Items\n// Input: one row per Shopify order from the audit log (latest attempt), or a single empty\n// item when there's no history yet (\"Always Output Data\" on the Postgres node).\n// Output: one { polledOrder } item per order that needs (re)processing.\n// ---- lib/shopify.js -----------------------------------------------------\n// Shopify ↔ ERPNext helpers shared by the LS-04 / LS-05 Code nodes. Pure functions;\n// the caller passes in `crypto` so this file runs in n8n and in unit tests alike.\n\n// Shopify signs each webhook: base64(HMAC-SHA256(raw body, app client secret)) in the\n// X-Shopify-Hmac-Sha256 header. Must be computed over the RAW bytes, never re-serialized JSON.\nfunction verifyShopifyHmac(rawBody, secret, headerValue, cryptoLib) {\n  // Missing the body, the secret or the signature? Can't be valid.\n  if (!rawBody || !secret || !headerValue) return false;\n  // Work out what the signature SHOULD be, using our copy of the secret.\n  const expected = cryptoLib.createHmac('sha256', secret).update(rawBody).digest('base64');\n  // Valid only if it matches the signature Shopify sent.\n  return constantTimeEqual(expected, String(headerValue).trim());\n}\n\n// Compare without short-circuiting, so response timing doesn't leak how much matched.\nfunction constantTimeEqual(a, b) {\n  // Different lengths can never match.\n  if (a.length !== b.length) return false;\n  // Stays 0 only if every character matches.\n  let diff = 0;\n  // Compare every character (XOR is 0 when two characters are equal); never stop early.\n  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  // Equal if no differences were found.\n  return diff === 0;\n}\n\n// Accepts BOTH shapes: the REST-style webhook payload (orders/create) and a GraphQL\n// `orders` node from the safety-net poll. Uses the string GID, never the numeric `id`:\n// Shopify IDs exceed Number.MAX_SAFE_INTEGER and get silently rounded by JSON.parse.\nfunction normalizeShopifyOrder(o) {\n  // Only the GraphQL shape has \"lineItems\", so that tells us which shape we have.\n  const isGraphql = Boolean(o && o.lineItems);\n  // The order lines, from whichever field this shape uses.\n  const rawLines = isGraphql ? (o.lineItems.nodes || []) : (o.line_items || []);\n  // Build one standard order shape, picking each value from the right field.\n  const order = {\n    orderGid: (isGraphql ? o.id : o.admin_graphql_api_id) || null,\n    orderName: o.name || null,\n    createdAt: (isGraphql ? o.createdAt : o.created_at) || null,\n    currency: (isGraphql ? o.currencyCode : o.currency) || null,\n    // true for Shopify test orders.\n    test: Boolean(o.test),\n    // Each line in a standard shape too.\n    lines: rawLines.map((l) => ({\n      // SKU with spaces trimmed off.\n      sku: (l.sku || '').trim(),\n      // Quantity as a number (0 if missing).\n      qty: Number(l.quantity) || 0,\n      // Unit price as a number; GraphQL keeps it deeper inside the line.\n      price: Number(isGraphql ? l.originalUnitPriceSet && l.originalUnitPriceSet.shopMoney.amount : l.price),\n      // A readable name for error messages.\n      title: l.title || l.name || '',\n    })),\n  };\n\n  // Reasons this order can't be imported (empty = fine).\n  const holdReasons = [];\n  // No order ID: we couldn't tell it apart from other orders.\n  if (!order.orderGid) holdReasons.push('Order has no admin_graphql_api_id');\n  // Nothing to import.\n  if (!order.lines.length) holdReasons.push('Order has no line items');\n  // Check each line.\n  order.lines.forEach((l) => {\n    // Every line needs a SKU to match it to an ERP item.\n    if (!l.sku) holdReasons.push(`Line \"${l.title}\" has no SKU (gift card, custom item or a variant missing its SKU in Shopify)`);\n    // Quantity must be more than zero.\n    if (l.qty <= 0) holdReasons.push(`Line \"${l.title}\" has quantity ${l.qty}`);\n    // Price must be a real number, 0 or more (this also catches \"not a number\").\n    if (!(l.price >= 0)) holdReasons.push(`Line \"${l.title}\" has an unreadable price`);\n  });\n  // Return the order, plus its unique SKUs, whether it's valid, and any hold reasons.\n  return { ...order, skus: [...new Set(order.lines.map((l) => l.sku).filter(Boolean))], valid: holdReasons.length === 0, holdReasons };\n}\n\n// Compare order SKUs with the ERP's Item list → reasons to hold the order (empty = OK).\nfunction matchOrderSkus(order, erpItems) {\n  // Lookup table: item code → ERP item.\n  const byCode = new Map((erpItems || []).map((i) => [i.name, i]));\n  // Problems found.\n  const reasons = [];\n  // Check each SKU on the order.\n  for (const sku of order.skus) {\n    // Find it in the ERP.\n    const item = byCode.get(sku);\n    // Not in the ERP at all.\n    if (!item) reasons.push(`Unknown SKU ${sku}: no ERP item with this code`);\n    // In the ERP but switched off.\n    else if (Number(item.disabled)) reasons.push(`SKU ${sku} is disabled in the ERP`);\n    // Templates (S-0108-0901) are style-level records; only size variants can be sold.\n    else if (Number(item.has_variants)) reasons.push(`SKU ${sku} is a style template, not a size: the Shopify variant is missing its size code`);\n  }\n  return reasons;\n}\n\n// Add a number of days to a date like \"2026-10-12\" and return the new date in the same format.\nfunction addDays(isoDate, days) {\n  // Make a date at midnight UTC (so time zones can't shift the day).\n  const d = new Date(`${isoDate.slice(0, 10)}T00:00:00Z`);\n  // Move it forward by \"days\".\n  d.setUTCDate(d.getUTCDate() + days);\n  // Back to \"YYYY-MM-DD\".\n  return d.toISOString().slice(0, 10);\n}\n\n// ERPNext Sales Order payload. One \"channel customer\" for all web orders: the common\n// connector pattern when the ERP doesn't need individual consumers (and avoids PII).\nfunction buildSalesOrder(order, { customer, company, warehouse, leadDays = 5 }) {\n  // The order date (or today if missing), as \"YYYY-MM-DD\".\n  const orderDate = (order.createdAt || new Date().toISOString()).slice(0, 10);\n  // Expected delivery: order date plus 5 days by default.\n  const deliveryDate = addDays(orderDate, leadDays);\n  return {\n    doctype: 'Sales Order',\n    customer,\n    // Only include company and warehouse if they were given.\n    ...(company ? { company } : {}),\n    ...(warehouse ? { set_warehouse: warehouse } : {}),\n    transaction_date: orderDate,\n    delivery_date: deliveryDate,\n    // The Shopify order number (e.g. #1001) as the customer PO number.\n    po_no: order.orderName,\n    // Our custom fields that link this Sales Order back to the Shopify order.\n    custom_shopify_order_id: order.orderGid,\n    custom_shopify_order_name: order.orderName,\n    // One Sales Order line per order line.\n    items: order.lines.map((l) => ({\n      item_code: l.sku,\n      qty: l.qty,\n      // Price rounded to 2 decimals (cents).\n      rate: Math.round(l.price * 100) / 100,\n      delivery_date: deliveryDate,\n      ...(warehouse ? { warehouse } : {}),\n    })),\n    // Created as a draft, then submitted by a second call: in ERPNext v16 inserting with\n    // docstatus=1 in one request skips the status update (doc stays 'Draft' while submitted).\n  };\n}\n\n// GraphQL reports most failures with HTTP 200: check top-level `errors` (auth, throttling,\n// bad query) AND the mutation's `userErrors` (validation). Missing either is a silent failure.\nfunction graphqlOutcome(resp, mutationKey) {\n  // Every problem found.\n  const errors = [];\n  // Top-level errors, e.g. \"THROTTLED: too many requests\".\n  for (const e of (resp && resp.errors) || []) {\n    errors.push(`${(e.extensions && e.extensions.code) || 'GRAPHQL'}: ${e.message}`);\n  }\n  // The part of the reply for our mutation (e.g. resp.data.productSet), or null.\n  const payload = mutationKey && resp && resp.data ? resp.data[mutationKey] : null;\n  // Validation errors on specific fields, e.g. \"title: can't be blank\".\n  for (const u of (payload && payload.userErrors) || []) {\n    errors.push(`${(u.field || []).join('.') || 'input'}: ${u.message}`);\n  }\n  // No errors but also no result? That's still a failure.\n  if (mutationKey && !payload && !errors.length) errors.push(`No ${mutationKey} payload in response`);\n  // ok = no errors. message = all errors in one line.\n  return { ok: errors.length === 0, message: errors.join('; '), payload };\n}\n\n// ---- Safety-net poll (LS-05) ---------------------------------------------\n// Two jobs, kept separate so neither depends on order volume:\n//  1. Missed webhooks: page through ALL orders created in the last few hours, skipping\n//     those the audit log already shows as imported.\n//  2. Held / failed orders: fetch them BY ID from the audit log's list, so retries don't\n//     depend on how many orders arrived since.\n// Page sizes keep each query under Shopify's 1,000-point single-query cost limit\n// (25 orders × 30 lines ≈ 775 requested points).\n// The order fields we ask Shopify for (same list in both queries below).\nconst ORDER_FIELDS = 'id name createdAt currencyCode test lineItems(first: 30) { nodes { sku quantity title originalUnitPriceSet { shopMoney { amount } } } }';\n// Query 1: recent orders, 25 per page. \"$after\" says which page to fetch next.\nconst RECENT_ORDERS_QUERY = `query recentOrders($q: String!, $after: String) { orders(first: 25, after: $after, query: $q, sortKey: CREATED_AT) { pageInfo { hasNextPage endCursor } nodes { ${ORDER_FIELDS} } } }`;\n// Query 2: specific orders by their IDs.\nconst ORDERS_BY_ID_QUERY = `query ordersById($ids: [ID!]!) { nodes(ids: $ids) { ... on Order { ${ORDER_FIELDS} } } }`;\n\n// Audit rows (latest attempt per Shopify order) → what the poll should skip and retry.\nfunction classifySyncState(rows) {\n  // Orders already done (no need to fetch again).\n  const imported = new Set();\n  // Orders that failed and should be tried again.\n  const retry = [];\n  // Look at each audit row.\n  for (const r of rows || []) {\n    // Skip empty rows (e.g. the placeholder row when there's no history yet).\n    if (!r || !r.order_gid) continue;\n    // Imported, or skipped as a duplicate: done.\n    if (r.status === 'success' || r.status === 'skipped') imported.add(r.order_gid);\n    // Failed to import: retry it.\n    else if (r.status === 'failed' && r.action === 'import_order') retry.push(r.order_gid);\n    // verify_signature failures are NOT retried by ID (the GID may be forged); if it was a\n    // real order rejected after a secret rotation, the recent-orders pass picks it up.\n  }\n  return { imported, retry };\n}\n\n// graphql(query, variables) → response body; sleep(ms) → Promise. Both injected so this runs\n// in an n8n Code node (this.helpers.httpRequest) and in unit tests (mocks).\nasync function fetchOrdersToReconcile({ graphql, sinceIso, imported, retryGids, maxPages = 200, sleep = async () => {} }) {\n  // Counters for the execution log.\n  const stats = { pages: 0, scanned: 0, skippedImported: 0, retriedById: 0, truncated: false, throttleWaits: 0 };\n  // Orders to process, keyed by ID so none appears twice.\n  const byId = new Map();\n\n  // Helper: run a query; if Shopify says \"slow down\" (THROTTLED), wait and try again.\n  const call = async (query, variables) => {\n    // Up to 6 tries.\n    for (let attempt = 0; attempt < 6; attempt++) {\n      // Send the query and wait for the reply.\n      const resp = await graphql(query, variables);\n      // Did Shopify say we're going too fast?\n      const throttled = (resp.errors || []).some((e) => e.extensions && e.extensions.code === 'THROTTLED');\n      // Not throttled:\n      if (!throttled) {\n        // Any other error is a real failure: stop with an error.\n        if (resp.errors && resp.errors.length) throw new Error(`Shopify GraphQL: ${resp.errors.map((e) => e.message).join('; ')}`);\n        // Success: return the data.\n        return resp.data;\n      }\n      // Throttled: count it...\n      stats.throttleWaits++;\n      // ...and wait a bit longer each time (2s, 4s, 6s…) before trying again.\n      await sleep(2000 * (attempt + 1)); // cost bucket refills each second; back off and retry\n    }\n    // Still throttled after 6 tries: give up with an error.\n    throw new Error('Shopify GraphQL: still THROTTLED after 6 attempts');\n  };\n\n  // Job 1: page through recent orders. \"after\" marks where the next page starts (null = first page).\n  let after = null;\n  do {\n    // Safety limit: stop after too many pages and note that the list was cut short.\n    if (stats.pages >= maxPages) { stats.truncated = true; break; }\n    // Fetch one page of orders created since \"sinceIso\".\n    const data = await call(RECENT_ORDERS_QUERY, { q: `created_at:>='${sinceIso}'`, after });\n    stats.pages++;\n    // Check each order on the page.\n    for (const o of data.orders.nodes) {\n      stats.scanned++;\n      // Already imported? Skip it. Otherwise add it to the list to process.\n      if (imported.has(o.id)) stats.skippedImported++;\n      else byId.set(o.id, o);\n    }\n    // More pages? Remember where the next one starts. Otherwise null, which ends the loop.\n    after = data.orders.pageInfo.hasNextPage ? data.orders.pageInfo.endCursor : null;\n  } while (after);\n\n  // Job 2: orders to retry that weren't already picked up in Job 1 (duplicates removed).\n  const pending = [...new Set(retryGids)].filter((id) => !byId.has(id));\n  // Fetch them 25 at a time.\n  for (let i = 0; i < pending.length; i += 25) {\n    const data = await call(ORDERS_BY_ID_QUERY, { ids: pending.slice(i, i + 25) });\n    // Add each order Shopify returned.\n    for (const o of data.nodes || []) {\n      if (o && o.id) { byId.set(o.id, o); stats.retriedById++; } // null = order deleted in Shopify\n    }\n  }\n  // Return the orders as a list, plus the counters.\n  return { orders: [...byId.values()], stats };\n}\n\n// The Shopify request that creates (or updates) a product with all its variants in one go.\nconst PRODUCT_SET_MUTATION =`mutation productSet($input: ProductSetInput!) {\n  productSet(synchronous: true, input: $input) {\n    product { id status variants(first: 1) { nodes { id sku } } }\n    userErrors { field message }\n  }\n}`;\n\n// Tag taxonomy modelled on the live storefront (division:, print_family:, launchMMDDYY…).\n// Make text tag-safe: lowercase, non-letters/digits become \"-\", no \"-\" at either end.\nconst tagSlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');\n// Turn \"2026-10-12\" into \"101226\" (month, day, 2-digit year). null if no date.\nconst mmddyy = (iso) => (iso ? `${iso.slice(5, 7)}${iso.slice(8, 10)}${iso.slice(2, 4)}` : null);\n\n// Build the list of Shopify tags for a product.\nfunction shopifyTags(item, price) {\n  // Each line is a tag, or false/null when the data for it is missing (\"a && b\" gives b only if a is set).\n  const tags = [\n    `division:${tagSlug(item.item_group)}`,\n    item.custom_print_family && `print_family:${item.custom_print_family}`,\n    item.custom_print_category && `print_category:${tagSlug(item.custom_print_category)}`,\n    item.custom_launch_date && `launch${mmddyy(item.custom_launch_date)}`,\n    item.custom_merch_date && `merch${mmddyy(item.custom_merch_date)}`,\n    item.custom_inventory_tier && `inventory_tier:${item.custom_inventory_tier}`,\n    Number(item.custom_limited_edition) && 'tag_Limited Edition',\n    // Always added, so we can find products this sync created.\n    'erp-sync',\n    // Flag products with no price yet.\n    price === '0.00' && 'needs-pricing',\n  ];\n  // Drop the false/null entries.\n  return tags.filter(Boolean);\n}\n\n// ERPNext style TEMPLATE → Shopify productSet: one DRAFT product per colorway with a Size\n// option and one variant per size (SKU = template code + size code, same rule ERPNext uses\n// for its variants). Built from the template's size run, so it doesn't race the ERP's\n// variant creation. Draft, because merchandising owns imagery and publishing.\n// Needs lib/product-model.js (sizeRunSkus).\nfunction buildProductSetRequest(item) {\n  // Retail price as text with 2 decimals, or \"0.00\" if there isn't a positive price.\n  const price = Number(item.custom_retail_price) > 0 ? Number(item.custom_retail_price).toFixed(2) : '0.00';\n  // Turn the stored size run (\"Preemie|Newborn|…\") into one SKU per size. \"unknown\" = sizes with no code.\n  const { variants, unknown } = sizeRunSkus(item.name, String(item.custom_size_run || '').split('|').filter(Boolean));\n  // No usable sizes? Stop with a clear error.\n  if (!variants.length) throw new Error(`Template ${item.name} has no size run with known size codes (${unknown.join(', ') || 'empty'})`);\n  return {\n    query: PRODUCT_SET_MUTATION,\n    variables: {\n      input: {\n        title: item.item_name,\n        // Always a draft: a person publishes it later.\n        status: 'DRAFT',\n        vendor: 'LSS Demo', // not the real brand: this is an unaffiliated demo store\n        productType: item.custom_product_type || item.item_group,\n        // The description in a paragraph, with \"<\" and \">\" removed so it can't inject HTML.\n        descriptionHtml: `<p>${String(item.description || '').replace(/[<>]/g, '')}</p>`,\n        tags: shopifyTags(item, price),\n        // One \"Size\" option listing every size.\n        productOptions: [{ name: 'Size', position: 1, values: variants.map((v) => ({ name: v.size })) }],\n        // One variant per size, each with its own SKU and the same price.\n        variants: variants.map((v) => ({ optionValues: [{ optionName: 'Size', name: v.size }], price, sku: v.sku })),\n      },\n    },\n    // The first size's SKU, used to check if the product already exists in Shopify.\n    firstSku: variants[0].sku,\n  };\n}\n// The store's address from the environment settings (empty if not set).\nconst domain = $env.SHOPIFY_STORE_DOMAIN || '';\n// Add \"https://\" in front unless it's already there.\nconst base = domain.startsWith('http') ? domain : `https://${domain}`;\n// The full Shopify GraphQL API address, using the configured API version (default 2026-10).\nconst url = `${base}/admin/api/${$env.SHOPIFY_API_VERSION || '2026-10'}/graphql.json`;\n// The access token fetched by the earlier \"Get Shopify Token\" node.\nconst token = $('Get Shopify Token').first().json.access_token;\n\n// Helper: send one GraphQL query to Shopify and return the response.\nconst graphql = (query, variables) => this.helpers.httpRequest({\n  // POST to the API address; send and receive JSON.\n  method: 'POST', url, json: true, body: { query, variables },\n  // Prove who we are with the access token.\n  headers: { 'X-Shopify-Access-Token': token },\n});\n\n// How far back to look for orders we might have missed.\nconst LOOKBACK_HOURS = 6; // Shopify stops retrying a webhook after ~4 h\n// Read the audit log rows: which orders are already imported, and which need a retry.\nconst state = classifySyncState($input.all().map((i) => i.json));\n// Ask Shopify for the orders that need processing. \"await\" waits for the answer.\nconst { orders, stats } = await fetchOrdersToReconcile({\n  graphql,\n  // The start of the lookback window: now minus 6 hours, as an ISO timestamp.\n  sinceIso: new Date(Date.now() - LOOKBACK_HOURS * 3600 * 1000).toISOString(),\n  // Orders to skip (already done).\n  imported: state.imported,\n  // Orders to fetch again by ID (held or failed earlier).\n  retryGids: state.retry,\n  // Helper that pauses for \"ms\" milliseconds, used when Shopify asks us to slow down.\n  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),\n});\n\n// Run stats ride along on the first item (visible in the execution log; ignored downstream).\n// Output one item per order; only the first item (i === 0) also carries the stats.\nreturn orders.map((o, i) => ({ json: { polledOrder: o, ...(i === 0 ? { pollStats: stats } : {}) } }));\n"
+      },
+      "id": "f9733405-e176-4379-a67f-06654c7de25b",
+      "name": "Fetch Orders to Reconcile",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mode: Run Once for All Items\n// Webhook items: verify the Shopify HMAC over the RAW body (Webhook node \"Raw Body\" option\n// puts it in binary property \"data\"), then normalize. Poll items ({ polledOrder }) were\n// fetched by us with our own token, so they are trusted.\n// Requires NODE_FUNCTION_ALLOW_BUILTIN=crypto on the n8n container.\n// ---- lib/shopify.js -----------------------------------------------------\n// Shopify ↔ ERPNext helpers shared by the LS-04 / LS-05 Code nodes. Pure functions;\n// the caller passes in `crypto` so this file runs in n8n and in unit tests alike.\n\n// Shopify signs each webhook: base64(HMAC-SHA256(raw body, app client secret)) in the\n// X-Shopify-Hmac-Sha256 header. Must be computed over the RAW bytes, never re-serialized JSON.\nfunction verifyShopifyHmac(rawBody, secret, headerValue, cryptoLib) {\n  // Missing the body, the secret or the signature? Can't be valid.\n  if (!rawBody || !secret || !headerValue) return false;\n  // Work out what the signature SHOULD be, using our copy of the secret.\n  const expected = cryptoLib.createHmac('sha256', secret).update(rawBody).digest('base64');\n  // Valid only if it matches the signature Shopify sent.\n  return constantTimeEqual(expected, String(headerValue).trim());\n}\n\n// Compare without short-circuiting, so response timing doesn't leak how much matched.\nfunction constantTimeEqual(a, b) {\n  // Different lengths can never match.\n  if (a.length !== b.length) return false;\n  // Stays 0 only if every character matches.\n  let diff = 0;\n  // Compare every character (XOR is 0 when two characters are equal); never stop early.\n  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  // Equal if no differences were found.\n  return diff === 0;\n}\n\n// Accepts BOTH shapes: the REST-style webhook payload (orders/create) and a GraphQL\n// `orders` node from the safety-net poll. Uses the string GID, never the numeric `id`:\n// Shopify IDs exceed Number.MAX_SAFE_INTEGER and get silently rounded by JSON.parse.\nfunction normalizeShopifyOrder(o) {\n  // Only the GraphQL shape has \"lineItems\", so that tells us which shape we have.\n  const isGraphql = Boolean(o && o.lineItems);\n  // The order lines, from whichever field this shape uses.\n  const rawLines = isGraphql ? (o.lineItems.nodes || []) : (o.line_items || []);\n  // Build one standard order shape, picking each value from the right field.\n  const order = {\n    orderGid: (isGraphql ? o.id : o.admin_graphql_api_id) || null,\n    orderName: o.name || null,\n    createdAt: (isGraphql ? o.createdAt : o.created_at) || null,\n    currency: (isGraphql ? o.currencyCode : o.currency) || null,\n    // true for Shopify test orders.\n    test: Boolean(o.test),\n    // Each line in a standard shape too.\n    lines: rawLines.map((l) => ({\n      // SKU with spaces trimmed off.\n      sku: (l.sku || '').trim(),\n      // Quantity as a number (0 if missing).\n      qty: Number(l.quantity) || 0,\n      // Unit price as a number; GraphQL keeps it deeper inside the line.\n      price: Number(isGraphql ? l.originalUnitPriceSet && l.originalUnitPriceSet.shopMoney.amount : l.price),\n      // A readable name for error messages.\n      title: l.title || l.name || '',\n    })),\n  };\n\n  // Reasons this order can't be imported (empty = fine).\n  const holdReasons = [];\n  // No order ID: we couldn't tell it apart from other orders.\n  if (!order.orderGid) holdReasons.push('Order has no admin_graphql_api_id');\n  // Nothing to import.\n  if (!order.lines.length) holdReasons.push('Order has no line items');\n  // Check each line.\n  order.lines.forEach((l) => {\n    // Every line needs a SKU to match it to an ERP item.\n    if (!l.sku) holdReasons.push(`Line \"${l.title}\" has no SKU (gift card, custom item or a variant missing its SKU in Shopify)`);\n    // Quantity must be more than zero.\n    if (l.qty <= 0) holdReasons.push(`Line \"${l.title}\" has quantity ${l.qty}`);\n    // Price must be a real number, 0 or more (this also catches \"not a number\").\n    if (!(l.price >= 0)) holdReasons.push(`Line \"${l.title}\" has an unreadable price`);\n  });\n  // Return the order, plus its unique SKUs, whether it's valid, and any hold reasons.\n  return { ...order, skus: [...new Set(order.lines.map((l) => l.sku).filter(Boolean))], valid: holdReasons.length === 0, holdReasons };\n}\n\n// Compare order SKUs with the ERP's Item list → reasons to hold the order (empty = OK).\nfunction matchOrderSkus(order, erpItems) {\n  // Lookup table: item code → ERP item.\n  const byCode = new Map((erpItems || []).map((i) => [i.name, i]));\n  // Problems found.\n  const reasons = [];\n  // Check each SKU on the order.\n  for (const sku of order.skus) {\n    // Find it in the ERP.\n    const item = byCode.get(sku);\n    // Not in the ERP at all.\n    if (!item) reasons.push(`Unknown SKU ${sku}: no ERP item with this code`);\n    // In the ERP but switched off.\n    else if (Number(item.disabled)) reasons.push(`SKU ${sku} is disabled in the ERP`);\n    // Templates (S-0108-0901) are style-level records; only size variants can be sold.\n    else if (Number(item.has_variants)) reasons.push(`SKU ${sku} is a style template, not a size: the Shopify variant is missing its size code`);\n  }\n  return reasons;\n}\n\n// Add a number of days to a date like \"2026-10-12\" and return the new date in the same format.\nfunction addDays(isoDate, days) {\n  // Make a date at midnight UTC (so time zones can't shift the day).\n  const d = new Date(`${isoDate.slice(0, 10)}T00:00:00Z`);\n  // Move it forward by \"days\".\n  d.setUTCDate(d.getUTCDate() + days);\n  // Back to \"YYYY-MM-DD\".\n  return d.toISOString().slice(0, 10);\n}\n\n// ERPNext Sales Order payload. One \"channel customer\" for all web orders: the common\n// connector pattern when the ERP doesn't need individual consumers (and avoids PII).\nfunction buildSalesOrder(order, { customer, company, warehouse, leadDays = 5 }) {\n  // The order date (or today if missing), as \"YYYY-MM-DD\".\n  const orderDate = (order.createdAt || new Date().toISOString()).slice(0, 10);\n  // Expected delivery: order date plus 5 days by default.\n  const deliveryDate = addDays(orderDate, leadDays);\n  return {\n    doctype: 'Sales Order',\n    customer,\n    // Only include company and warehouse if they were given.\n    ...(company ? { company } : {}),\n    ...(warehouse ? { set_warehouse: warehouse } : {}),\n    transaction_date: orderDate,\n    delivery_date: deliveryDate,\n    // The Shopify order number (e.g. #1001) as the customer PO number.\n    po_no: order.orderName,\n    // Our custom fields that link this Sales Order back to the Shopify order.\n    custom_shopify_order_id: order.orderGid,\n    custom_shopify_order_name: order.orderName,\n    // One Sales Order line per order line.\n    items: order.lines.map((l) => ({\n      item_code: l.sku,\n      qty: l.qty,\n      // Price rounded to 2 decimals (cents).\n      rate: Math.round(l.price * 100) / 100,\n      delivery_date: deliveryDate,\n      ...(warehouse ? { warehouse } : {}),\n    })),\n    // Created as a draft, then submitted by a second call: in ERPNext v16 inserting with\n    // docstatus=1 in one request skips the status update (doc stays 'Draft' while submitted).\n  };\n}\n\n// GraphQL reports most failures with HTTP 200: check top-level `errors` (auth, throttling,\n// bad query) AND the mutation's `userErrors` (validation). Missing either is a silent failure.\nfunction graphqlOutcome(resp, mutationKey) {\n  // Every problem found.\n  const errors = [];\n  // Top-level errors, e.g. \"THROTTLED: too many requests\".\n  for (const e of (resp && resp.errors) || []) {\n    errors.push(`${(e.extensions && e.extensions.code) || 'GRAPHQL'}: ${e.message}`);\n  }\n  // The part of the reply for our mutation (e.g. resp.data.productSet), or null.\n  const payload = mutationKey && resp && resp.data ? resp.data[mutationKey] : null;\n  // Validation errors on specific fields, e.g. \"title: can't be blank\".\n  for (const u of (payload && payload.userErrors) || []) {\n    errors.push(`${(u.field || []).join('.') || 'input'}: ${u.message}`);\n  }\n  // No errors but also no result? That's still a failure.\n  if (mutationKey && !payload && !errors.length) errors.push(`No ${mutationKey} payload in response`);\n  // ok = no errors. message = all errors in one line.\n  return { ok: errors.length === 0, message: errors.join('; '), payload };\n}\n\n// ---- Safety-net poll (LS-05) ---------------------------------------------\n// Two jobs, kept separate so neither depends on order volume:\n//  1. Missed webhooks: page through ALL orders created in the last few hours, skipping\n//     those the audit log already shows as imported.\n//  2. Held / failed orders: fetch them BY ID from the audit log's list, so retries don't\n//     depend on how many orders arrived since.\n// Page sizes keep each query under Shopify's 1,000-point single-query cost limit\n// (25 orders × 30 lines ≈ 775 requested points).\n// The order fields we ask Shopify for (same list in both queries below).\nconst ORDER_FIELDS = 'id name createdAt currencyCode test lineItems(first: 30) { nodes { sku quantity title originalUnitPriceSet { shopMoney { amount } } } }';\n// Query 1: recent orders, 25 per page. \"$after\" says which page to fetch next.\nconst RECENT_ORDERS_QUERY = `query recentOrders($q: String!, $after: String) { orders(first: 25, after: $after, query: $q, sortKey: CREATED_AT) { pageInfo { hasNextPage endCursor } nodes { ${ORDER_FIELDS} } } }`;\n// Query 2: specific orders by their IDs.\nconst ORDERS_BY_ID_QUERY = `query ordersById($ids: [ID!]!) { nodes(ids: $ids) { ... on Order { ${ORDER_FIELDS} } } }`;\n\n// Audit rows (latest attempt per Shopify order) → what the poll should skip and retry.\nfunction classifySyncState(rows) {\n  // Orders already done (no need to fetch again).\n  const imported = new Set();\n  // Orders that failed and should be tried again.\n  const retry = [];\n  // Look at each audit row.\n  for (const r of rows || []) {\n    // Skip empty rows (e.g. the placeholder row when there's no history yet).\n    if (!r || !r.order_gid) continue;\n    // Imported, or skipped as a duplicate: done.\n    if (r.status === 'success' || r.status === 'skipped') imported.add(r.order_gid);\n    // Failed to import: retry it.\n    else if (r.status === 'failed' && r.action === 'import_order') retry.push(r.order_gid);\n    // verify_signature failures are NOT retried by ID (the GID may be forged); if it was a\n    // real order rejected after a secret rotation, the recent-orders pass picks it up.\n  }\n  return { imported, retry };\n}\n\n// graphql(query, variables) → response body; sleep(ms) → Promise. Both injected so this runs\n// in an n8n Code node (this.helpers.httpRequest) and in unit tests (mocks).\nasync function fetchOrdersToReconcile({ graphql, sinceIso, imported, retryGids, maxPages = 200, sleep = async () => {} }) {\n  // Counters for the execution log.\n  const stats = { pages: 0, scanned: 0, skippedImported: 0, retriedById: 0, truncated: false, throttleWaits: 0 };\n  // Orders to process, keyed by ID so none appears twice.\n  const byId = new Map();\n\n  // Helper: run a query; if Shopify says \"slow down\" (THROTTLED), wait and try again.\n  const call = async (query, variables) => {\n    // Up to 6 tries.\n    for (let attempt = 0; attempt < 6; attempt++) {\n      // Send the query and wait for the reply.\n      const resp = await graphql(query, variables);\n      // Did Shopify say we're going too fast?\n      const throttled = (resp.errors || []).some((e) => e.extensions && e.extensions.code === 'THROTTLED');\n      // Not throttled:\n      if (!throttled) {\n        // Any other error is a real failure: stop with an error.\n        if (resp.errors && resp.errors.length) throw new Error(`Shopify GraphQL: ${resp.errors.map((e) => e.message).join('; ')}`);\n        // Success: return the data.\n        return resp.data;\n      }\n      // Throttled: count it...\n      stats.throttleWaits++;\n      // ...and wait a bit longer each time (2s, 4s, 6s…) before trying again.\n      await sleep(2000 * (attempt + 1)); // cost bucket refills each second; back off and retry\n    }\n    // Still throttled after 6 tries: give up with an error.\n    throw new Error('Shopify GraphQL: still THROTTLED after 6 attempts');\n  };\n\n  // Job 1: page through recent orders. \"after\" marks where the next page starts (null = first page).\n  let after = null;\n  do {\n    // Safety limit: stop after too many pages and note that the list was cut short.\n    if (stats.pages >= maxPages) { stats.truncated = true; break; }\n    // Fetch one page of orders created since \"sinceIso\".\n    const data = await call(RECENT_ORDERS_QUERY, { q: `created_at:>='${sinceIso}'`, after });\n    stats.pages++;\n    // Check each order on the page.\n    for (const o of data.orders.nodes) {\n      stats.scanned++;\n      // Already imported? Skip it. Otherwise add it to the list to process.\n      if (imported.has(o.id)) stats.skippedImported++;\n      else byId.set(o.id, o);\n    }\n    // More pages? Remember where the next one starts. Otherwise null, which ends the loop.\n    after = data.orders.pageInfo.hasNextPage ? data.orders.pageInfo.endCursor : null;\n  } while (after);\n\n  // Job 2: orders to retry that weren't already picked up in Job 1 (duplicates removed).\n  const pending = [...new Set(retryGids)].filter((id) => !byId.has(id));\n  // Fetch them 25 at a time.\n  for (let i = 0; i < pending.length; i += 25) {\n    const data = await call(ORDERS_BY_ID_QUERY, { ids: pending.slice(i, i + 25) });\n    // Add each order Shopify returned.\n    for (const o of data.nodes || []) {\n      if (o && o.id) { byId.set(o.id, o); stats.retriedById++; } // null = order deleted in Shopify\n    }\n  }\n  // Return the orders as a list, plus the counters.\n  return { orders: [...byId.values()], stats };\n}\n\n// The Shopify request that creates (or updates) a product with all its variants in one go.\nconst PRODUCT_SET_MUTATION =`mutation productSet($input: ProductSetInput!) {\n  productSet(synchronous: true, input: $input) {\n    product { id status variants(first: 1) { nodes { id sku } } }\n    userErrors { field message }\n  }\n}`;\n\n// Tag taxonomy modelled on the live storefront (division:, print_family:, launchMMDDYY…).\n// Make text tag-safe: lowercase, non-letters/digits become \"-\", no \"-\" at either end.\nconst tagSlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');\n// Turn \"2026-10-12\" into \"101226\" (month, day, 2-digit year). null if no date.\nconst mmddyy = (iso) => (iso ? `${iso.slice(5, 7)}${iso.slice(8, 10)}${iso.slice(2, 4)}` : null);\n\n// Build the list of Shopify tags for a product.\nfunction shopifyTags(item, price) {\n  // Each line is a tag, or false/null when the data for it is missing (\"a && b\" gives b only if a is set).\n  const tags = [\n    `division:${tagSlug(item.item_group)}`,\n    item.custom_print_family && `print_family:${item.custom_print_family}`,\n    item.custom_print_category && `print_category:${tagSlug(item.custom_print_category)}`,\n    item.custom_launch_date && `launch${mmddyy(item.custom_launch_date)}`,\n    item.custom_merch_date && `merch${mmddyy(item.custom_merch_date)}`,\n    item.custom_inventory_tier && `inventory_tier:${item.custom_inventory_tier}`,\n    Number(item.custom_limited_edition) && 'tag_Limited Edition',\n    // Always added, so we can find products this sync created.\n    'erp-sync',\n    // Flag products with no price yet.\n    price === '0.00' && 'needs-pricing',\n  ];\n  // Drop the false/null entries.\n  return tags.filter(Boolean);\n}\n\n// ERPNext style TEMPLATE → Shopify productSet: one DRAFT product per colorway with a Size\n// option and one variant per size (SKU = template code + size code, same rule ERPNext uses\n// for its variants). Built from the template's size run, so it doesn't race the ERP's\n// variant creation. Draft, because merchandising owns imagery and publishing.\n// Needs lib/product-model.js (sizeRunSkus).\nfunction buildProductSetRequest(item) {\n  // Retail price as text with 2 decimals, or \"0.00\" if there isn't a positive price.\n  const price = Number(item.custom_retail_price) > 0 ? Number(item.custom_retail_price).toFixed(2) : '0.00';\n  // Turn the stored size run (\"Preemie|Newborn|…\") into one SKU per size. \"unknown\" = sizes with no code.\n  const { variants, unknown } = sizeRunSkus(item.name, String(item.custom_size_run || '').split('|').filter(Boolean));\n  // No usable sizes? Stop with a clear error.\n  if (!variants.length) throw new Error(`Template ${item.name} has no size run with known size codes (${unknown.join(', ') || 'empty'})`);\n  return {\n    query: PRODUCT_SET_MUTATION,\n    variables: {\n      input: {\n        title: item.item_name,\n        // Always a draft: a person publishes it later.\n        status: 'DRAFT',\n        vendor: 'LSS Demo', // not the real brand: this is an unaffiliated demo store\n        productType: item.custom_product_type || item.item_group,\n        // The description in a paragraph, with \"<\" and \">\" removed so it can't inject HTML.\n        descriptionHtml: `<p>${String(item.description || '').replace(/[<>]/g, '')}</p>`,\n        tags: shopifyTags(item, price),\n        // One \"Size\" option listing every size.\n        productOptions: [{ name: 'Size', position: 1, values: variants.map((v) => ({ name: v.size })) }],\n        // One variant per size, each with its own SKU and the same price.\n        variants: variants.map((v) => ({ optionValues: [{ optionName: 'Size', name: v.size }], price, sku: v.sku })),\n      },\n    },\n    // The first size's SKU, used to check if the product already exists in Shopify.\n    firstSku: variants[0].sku,\n  };\n}\n// Node's built-in crypto library, used to check the signature.\nconst crypto = require('crypto');\n// The shared secret Shopify signs webhooks with (from the environment settings).\nconst secret = $env.SHOPIFY_CLIENT_SECRET;\n// Every incoming item.\nconst items = $input.all();\n// The list of items this node will output.\nconst out = [];\n\n// Go through each item by position (i = 0, 1, 2…).\nfor (let i = 0; i < items.length; i++) {\n  // Pull out the item's normal data (json) and any file data (binary).\n  const { json, binary } = items[i];\n  // Came from our own poll? It's trusted: clean it up, mark it valid, and move on.\n  if (json.polledOrder) {\n    out.push({ json: { ...normalizeShopifyOrder(json.polledOrder), source: 'poll', signatureValid: true }, pairedItem: { item: i } });\n    // Skip the rest of the loop for this item.\n    continue;\n  }\n  // From here on it's a webhook. Get its HTTP headers (empty if missing).\n  const headers = json.headers || {};\n  // Read the exact raw bytes Shopify sent (needed for the signature check), or null if none.\n  const raw = binary && binary.data ? await this.helpers.getBinaryDataBuffer(i, 'data') : null;\n  // Check the signature: true if it really came from Shopify, false if not.\n  const signatureValid = verifyShopifyHmac(raw, secret, headers['x-shopify-hmac-sha256'], crypto);\n  // Add the cleaned-up order to the output.\n  out.push({\n    json: {\n      // The order in a standard shape (empty object if there's no body).\n      ...normalizeShopifyOrder(json.body || {}),\n      source: 'webhook',\n      signatureValid,\n      // Shopify's webhook ID and shop domain from the headers, for troubleshooting.\n      webhookId: headers['x-shopify-webhook-id'] || null,\n      shopDomain: headers['x-shopify-shop-domain'] || null,\n    },\n    // Link this output back to the input item it came from.\n    pairedItem: { item: i },\n  });\n}\n// Send all the orders on to the next node.\nreturn out;\n"
+      },
+      "id": "7cba9494-5b9c-4898-aee0-66e68c0ed319",
+      "name": "Verify & Normalize Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "459038b1-5f43-40d1-aa94-8e41147332a2",
+              "leftValue": "={{ $json.signatureValid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "218b4842-f154-42d2-ae2d-7f7f1340161a",
+      "name": "Signature Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "3a3a0058-9dc8-499c-acca-e50d5c950a0f",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2193255c-3aab-4219-a511-538c5a952d61",
+      "name": "Order Lines Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.ERPNEXT_BASE_URL }}/api/resource/Sales Order",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filters",
+              "value": "={{ JSON.stringify([[\"custom_shopify_order_id\", \"=\", $json.orderGid]]) }}"
+            },
+            {
+              "name": "fields",
+              "value": "[\"name\"]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e21d4cc8-0b4b-4a54-a810-2d2edeadc93f",
+      "name": "Find Existing Sales Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        -40
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsErpnextApiCred",
+          "name": "ERPNext API (integration user)"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "8e5d99b3-30a7-44d7-af3b-ab75118fc66b",
+              "leftValue": "={{ ($json.data || []).length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "43ab1b65-2d18-4f22-ad9a-1140b0bb86e5",
+      "name": "Already Imported?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.ERPNEXT_BASE_URL }}/api/resource/Item",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filters",
+              "value": "={{ JSON.stringify([[\"name\", \"in\", $('Verify & Normalize Order').item.json.skus]]) }}"
+            },
+            {
+              "name": "fields",
+              "value": "[\"name\", \"disabled\", \"has_variants\"]"
+            },
+            {
+              "name": "limit_page_length",
+              "value": "0"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "30934593-4916-4039-a9ed-14b6b4f8f547",
+      "name": "Look Up SKUs in ERP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        -20
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsErpnextApiCred",
+          "name": "ERPNext API (integration user)"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Mode: Run Once for Each Item\n// Input: ERPNext Item list for the order's SKUs. Decides import vs hold.\n// ---- lib/shopify.js -----------------------------------------------------\n// Shopify ↔ ERPNext helpers shared by the LS-04 / LS-05 Code nodes. Pure functions;\n// the caller passes in `crypto` so this file runs in n8n and in unit tests alike.\n\n// Shopify signs each webhook: base64(HMAC-SHA256(raw body, app client secret)) in the\n// X-Shopify-Hmac-Sha256 header. Must be computed over the RAW bytes, never re-serialized JSON.\nfunction verifyShopifyHmac(rawBody, secret, headerValue, cryptoLib) {\n  // Missing the body, the secret or the signature? Can't be valid.\n  if (!rawBody || !secret || !headerValue) return false;\n  // Work out what the signature SHOULD be, using our copy of the secret.\n  const expected = cryptoLib.createHmac('sha256', secret).update(rawBody).digest('base64');\n  // Valid only if it matches the signature Shopify sent.\n  return constantTimeEqual(expected, String(headerValue).trim());\n}\n\n// Compare without short-circuiting, so response timing doesn't leak how much matched.\nfunction constantTimeEqual(a, b) {\n  // Different lengths can never match.\n  if (a.length !== b.length) return false;\n  // Stays 0 only if every character matches.\n  let diff = 0;\n  // Compare every character (XOR is 0 when two characters are equal); never stop early.\n  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  // Equal if no differences were found.\n  return diff === 0;\n}\n\n// Accepts BOTH shapes: the REST-style webhook payload (orders/create) and a GraphQL\n// `orders` node from the safety-net poll. Uses the string GID, never the numeric `id`:\n// Shopify IDs exceed Number.MAX_SAFE_INTEGER and get silently rounded by JSON.parse.\nfunction normalizeShopifyOrder(o) {\n  // Only the GraphQL shape has \"lineItems\", so that tells us which shape we have.\n  const isGraphql = Boolean(o && o.lineItems);\n  // The order lines, from whichever field this shape uses.\n  const rawLines = isGraphql ? (o.lineItems.nodes || []) : (o.line_items || []);\n  // Build one standard order shape, picking each value from the right field.\n  const order = {\n    orderGid: (isGraphql ? o.id : o.admin_graphql_api_id) || null,\n    orderName: o.name || null,\n    createdAt: (isGraphql ? o.createdAt : o.created_at) || null,\n    currency: (isGraphql ? o.currencyCode : o.currency) || null,\n    // true for Shopify test orders.\n    test: Boolean(o.test),\n    // Each line in a standard shape too.\n    lines: rawLines.map((l) => ({\n      // SKU with spaces trimmed off.\n      sku: (l.sku || '').trim(),\n      // Quantity as a number (0 if missing).\n      qty: Number(l.quantity) || 0,\n      // Unit price as a number; GraphQL keeps it deeper inside the line.\n      price: Number(isGraphql ? l.originalUnitPriceSet && l.originalUnitPriceSet.shopMoney.amount : l.price),\n      // A readable name for error messages.\n      title: l.title || l.name || '',\n    })),\n  };\n\n  // Reasons this order can't be imported (empty = fine).\n  const holdReasons = [];\n  // No order ID: we couldn't tell it apart from other orders.\n  if (!order.orderGid) holdReasons.push('Order has no admin_graphql_api_id');\n  // Nothing to import.\n  if (!order.lines.length) holdReasons.push('Order has no line items');\n  // Check each line.\n  order.lines.forEach((l) => {\n    // Every line needs a SKU to match it to an ERP item.\n    if (!l.sku) holdReasons.push(`Line \"${l.title}\" has no SKU (gift card, custom item or a variant missing its SKU in Shopify)`);\n    // Quantity must be more than zero.\n    if (l.qty <= 0) holdReasons.push(`Line \"${l.title}\" has quantity ${l.qty}`);\n    // Price must be a real number, 0 or more (this also catches \"not a number\").\n    if (!(l.price >= 0)) holdReasons.push(`Line \"${l.title}\" has an unreadable price`);\n  });\n  // Return the order, plus its unique SKUs, whether it's valid, and any hold reasons.\n  return { ...order, skus: [...new Set(order.lines.map((l) => l.sku).filter(Boolean))], valid: holdReasons.length === 0, holdReasons };\n}\n\n// Compare order SKUs with the ERP's Item list → reasons to hold the order (empty = OK).\nfunction matchOrderSkus(order, erpItems) {\n  // Lookup table: item code → ERP item.\n  const byCode = new Map((erpItems || []).map((i) => [i.name, i]));\n  // Problems found.\n  const reasons = [];\n  // Check each SKU on the order.\n  for (const sku of order.skus) {\n    // Find it in the ERP.\n    const item = byCode.get(sku);\n    // Not in the ERP at all.\n    if (!item) reasons.push(`Unknown SKU ${sku}: no ERP item with this code`);\n    // In the ERP but switched off.\n    else if (Number(item.disabled)) reasons.push(`SKU ${sku} is disabled in the ERP`);\n    // Templates (S-0108-0901) are style-level records; only size variants can be sold.\n    else if (Number(item.has_variants)) reasons.push(`SKU ${sku} is a style template, not a size: the Shopify variant is missing its size code`);\n  }\n  return reasons;\n}\n\n// Add a number of days to a date like \"2026-10-12\" and return the new date in the same format.\nfunction addDays(isoDate, days) {\n  // Make a date at midnight UTC (so time zones can't shift the day).\n  const d = new Date(`${isoDate.slice(0, 10)}T00:00:00Z`);\n  // Move it forward by \"days\".\n  d.setUTCDate(d.getUTCDate() + days);\n  // Back to \"YYYY-MM-DD\".\n  return d.toISOString().slice(0, 10);\n}\n\n// ERPNext Sales Order payload. One \"channel customer\" for all web orders: the common\n// connector pattern when the ERP doesn't need individual consumers (and avoids PII).\nfunction buildSalesOrder(order, { customer, company, warehouse, leadDays = 5 }) {\n  // The order date (or today if missing), as \"YYYY-MM-DD\".\n  const orderDate = (order.createdAt || new Date().toISOString()).slice(0, 10);\n  // Expected delivery: order date plus 5 days by default.\n  const deliveryDate = addDays(orderDate, leadDays);\n  return {\n    doctype: 'Sales Order',\n    customer,\n    // Only include company and warehouse if they were given.\n    ...(company ? { company } : {}),\n    ...(warehouse ? { set_warehouse: warehouse } : {}),\n    transaction_date: orderDate,\n    delivery_date: deliveryDate,\n    // The Shopify order number (e.g. #1001) as the customer PO number.\n    po_no: order.orderName,\n    // Our custom fields that link this Sales Order back to the Shopify order.\n    custom_shopify_order_id: order.orderGid,\n    custom_shopify_order_name: order.orderName,\n    // One Sales Order line per order line.\n    items: order.lines.map((l) => ({\n      item_code: l.sku,\n      qty: l.qty,\n      // Price rounded to 2 decimals (cents).\n      rate: Math.round(l.price * 100) / 100,\n      delivery_date: deliveryDate,\n      ...(warehouse ? { warehouse } : {}),\n    })),\n    // Created as a draft, then submitted by a second call: in ERPNext v16 inserting with\n    // docstatus=1 in one request skips the status update (doc stays 'Draft' while submitted).\n  };\n}\n\n// GraphQL reports most failures with HTTP 200: check top-level `errors` (auth, throttling,\n// bad query) AND the mutation's `userErrors` (validation). Missing either is a silent failure.\nfunction graphqlOutcome(resp, mutationKey) {\n  // Every problem found.\n  const errors = [];\n  // Top-level errors, e.g. \"THROTTLED: too many requests\".\n  for (const e of (resp && resp.errors) || []) {\n    errors.push(`${(e.extensions && e.extensions.code) || 'GRAPHQL'}: ${e.message}`);\n  }\n  // The part of the reply for our mutation (e.g. resp.data.productSet), or null.\n  const payload = mutationKey && resp && resp.data ? resp.data[mutationKey] : null;\n  // Validation errors on specific fields, e.g. \"title: can't be blank\".\n  for (const u of (payload && payload.userErrors) || []) {\n    errors.push(`${(u.field || []).join('.') || 'input'}: ${u.message}`);\n  }\n  // No errors but also no result? That's still a failure.\n  if (mutationKey && !payload && !errors.length) errors.push(`No ${mutationKey} payload in response`);\n  // ok = no errors. message = all errors in one line.\n  return { ok: errors.length === 0, message: errors.join('; '), payload };\n}\n\n// ---- Safety-net poll (LS-05) ---------------------------------------------\n// Two jobs, kept separate so neither depends on order volume:\n//  1. Missed webhooks: page through ALL orders created in the last few hours, skipping\n//     those the audit log already shows as imported.\n//  2. Held / failed orders: fetch them BY ID from the audit log's list, so retries don't\n//     depend on how many orders arrived since.\n// Page sizes keep each query under Shopify's 1,000-point single-query cost limit\n// (25 orders × 30 lines ≈ 775 requested points).\n// The order fields we ask Shopify for (same list in both queries below).\nconst ORDER_FIELDS = 'id name createdAt currencyCode test lineItems(first: 30) { nodes { sku quantity title originalUnitPriceSet { shopMoney { amount } } } }';\n// Query 1: recent orders, 25 per page. \"$after\" says which page to fetch next.\nconst RECENT_ORDERS_QUERY = `query recentOrders($q: String!, $after: String) { orders(first: 25, after: $after, query: $q, sortKey: CREATED_AT) { pageInfo { hasNextPage endCursor } nodes { ${ORDER_FIELDS} } } }`;\n// Query 2: specific orders by their IDs.\nconst ORDERS_BY_ID_QUERY = `query ordersById($ids: [ID!]!) { nodes(ids: $ids) { ... on Order { ${ORDER_FIELDS} } } }`;\n\n// Audit rows (latest attempt per Shopify order) → what the poll should skip and retry.\nfunction classifySyncState(rows) {\n  // Orders already done (no need to fetch again).\n  const imported = new Set();\n  // Orders that failed and should be tried again.\n  const retry = [];\n  // Look at each audit row.\n  for (const r of rows || []) {\n    // Skip empty rows (e.g. the placeholder row when there's no history yet).\n    if (!r || !r.order_gid) continue;\n    // Imported, or skipped as a duplicate: done.\n    if (r.status === 'success' || r.status === 'skipped') imported.add(r.order_gid);\n    // Failed to import: retry it.\n    else if (r.status === 'failed' && r.action === 'import_order') retry.push(r.order_gid);\n    // verify_signature failures are NOT retried by ID (the GID may be forged); if it was a\n    // real order rejected after a secret rotation, the recent-orders pass picks it up.\n  }\n  return { imported, retry };\n}\n\n// graphql(query, variables) → response body; sleep(ms) → Promise. Both injected so this runs\n// in an n8n Code node (this.helpers.httpRequest) and in unit tests (mocks).\nasync function fetchOrdersToReconcile({ graphql, sinceIso, imported, retryGids, maxPages = 200, sleep = async () => {} }) {\n  // Counters for the execution log.\n  const stats = { pages: 0, scanned: 0, skippedImported: 0, retriedById: 0, truncated: false, throttleWaits: 0 };\n  // Orders to process, keyed by ID so none appears twice.\n  const byId = new Map();\n\n  // Helper: run a query; if Shopify says \"slow down\" (THROTTLED), wait and try again.\n  const call = async (query, variables) => {\n    // Up to 6 tries.\n    for (let attempt = 0; attempt < 6; attempt++) {\n      // Send the query and wait for the reply.\n      const resp = await graphql(query, variables);\n      // Did Shopify say we're going too fast?\n      const throttled = (resp.errors || []).some((e) => e.extensions && e.extensions.code === 'THROTTLED');\n      // Not throttled:\n      if (!throttled) {\n        // Any other error is a real failure: stop with an error.\n        if (resp.errors && resp.errors.length) throw new Error(`Shopify GraphQL: ${resp.errors.map((e) => e.message).join('; ')}`);\n        // Success: return the data.\n        return resp.data;\n      }\n      // Throttled: count it...\n      stats.throttleWaits++;\n      // ...and wait a bit longer each time (2s, 4s, 6s…) before trying again.\n      await sleep(2000 * (attempt + 1)); // cost bucket refills each second; back off and retry\n    }\n    // Still throttled after 6 tries: give up with an error.\n    throw new Error('Shopify GraphQL: still THROTTLED after 6 attempts');\n  };\n\n  // Job 1: page through recent orders. \"after\" marks where the next page starts (null = first page).\n  let after = null;\n  do {\n    // Safety limit: stop after too many pages and note that the list was cut short.\n    if (stats.pages >= maxPages) { stats.truncated = true; break; }\n    // Fetch one page of orders created since \"sinceIso\".\n    const data = await call(RECENT_ORDERS_QUERY, { q: `created_at:>='${sinceIso}'`, after });\n    stats.pages++;\n    // Check each order on the page.\n    for (const o of data.orders.nodes) {\n      stats.scanned++;\n      // Already imported? Skip it. Otherwise add it to the list to process.\n      if (imported.has(o.id)) stats.skippedImported++;\n      else byId.set(o.id, o);\n    }\n    // More pages? Remember where the next one starts. Otherwise null, which ends the loop.\n    after = data.orders.pageInfo.hasNextPage ? data.orders.pageInfo.endCursor : null;\n  } while (after);\n\n  // Job 2: orders to retry that weren't already picked up in Job 1 (duplicates removed).\n  const pending = [...new Set(retryGids)].filter((id) => !byId.has(id));\n  // Fetch them 25 at a time.\n  for (let i = 0; i < pending.length; i += 25) {\n    const data = await call(ORDERS_BY_ID_QUERY, { ids: pending.slice(i, i + 25) });\n    // Add each order Shopify returned.\n    for (const o of data.nodes || []) {\n      if (o && o.id) { byId.set(o.id, o); stats.retriedById++; } // null = order deleted in Shopify\n    }\n  }\n  // Return the orders as a list, plus the counters.\n  return { orders: [...byId.values()], stats };\n}\n\n// The Shopify request that creates (or updates) a product with all its variants in one go.\nconst PRODUCT_SET_MUTATION =`mutation productSet($input: ProductSetInput!) {\n  productSet(synchronous: true, input: $input) {\n    product { id status variants(first: 1) { nodes { id sku } } }\n    userErrors { field message }\n  }\n}`;\n\n// Tag taxonomy modelled on the live storefront (division:, print_family:, launchMMDDYY…).\n// Make text tag-safe: lowercase, non-letters/digits become \"-\", no \"-\" at either end.\nconst tagSlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');\n// Turn \"2026-10-12\" into \"101226\" (month, day, 2-digit year). null if no date.\nconst mmddyy = (iso) => (iso ? `${iso.slice(5, 7)}${iso.slice(8, 10)}${iso.slice(2, 4)}` : null);\n\n// Build the list of Shopify tags for a product.\nfunction shopifyTags(item, price) {\n  // Each line is a tag, or false/null when the data for it is missing (\"a && b\" gives b only if a is set).\n  const tags = [\n    `division:${tagSlug(item.item_group)}`,\n    item.custom_print_family && `print_family:${item.custom_print_family}`,\n    item.custom_print_category && `print_category:${tagSlug(item.custom_print_category)}`,\n    item.custom_launch_date && `launch${mmddyy(item.custom_launch_date)}`,\n    item.custom_merch_date && `merch${mmddyy(item.custom_merch_date)}`,\n    item.custom_inventory_tier && `inventory_tier:${item.custom_inventory_tier}`,\n    Number(item.custom_limited_edition) && 'tag_Limited Edition',\n    // Always added, so we can find products this sync created.\n    'erp-sync',\n    // Flag products with no price yet.\n    price === '0.00' && 'needs-pricing',\n  ];\n  // Drop the false/null entries.\n  return tags.filter(Boolean);\n}\n\n// ERPNext style TEMPLATE → Shopify productSet: one DRAFT product per colorway with a Size\n// option and one variant per size (SKU = template code + size code, same rule ERPNext uses\n// for its variants). Built from the template's size run, so it doesn't race the ERP's\n// variant creation. Draft, because merchandising owns imagery and publishing.\n// Needs lib/product-model.js (sizeRunSkus).\nfunction buildProductSetRequest(item) {\n  // Retail price as text with 2 decimals, or \"0.00\" if there isn't a positive price.\n  const price = Number(item.custom_retail_price) > 0 ? Number(item.custom_retail_price).toFixed(2) : '0.00';\n  // Turn the stored size run (\"Preemie|Newborn|…\") into one SKU per size. \"unknown\" = sizes with no code.\n  const { variants, unknown } = sizeRunSkus(item.name, String(item.custom_size_run || '').split('|').filter(Boolean));\n  // No usable sizes? Stop with a clear error.\n  if (!variants.length) throw new Error(`Template ${item.name} has no size run with known size codes (${unknown.join(', ') || 'empty'})`);\n  return {\n    query: PRODUCT_SET_MUTATION,\n    variables: {\n      input: {\n        title: item.item_name,\n        // Always a draft: a person publishes it later.\n        status: 'DRAFT',\n        vendor: 'LSS Demo', // not the real brand: this is an unaffiliated demo store\n        productType: item.custom_product_type || item.item_group,\n        // The description in a paragraph, with \"<\" and \">\" removed so it can't inject HTML.\n        descriptionHtml: `<p>${String(item.description || '').replace(/[<>]/g, '')}</p>`,\n        tags: shopifyTags(item, price),\n        // One \"Size\" option listing every size.\n        productOptions: [{ name: 'Size', position: 1, values: variants.map((v) => ({ name: v.size })) }],\n        // One variant per size, each with its own SKU and the same price.\n        variants: variants.map((v) => ({ optionValues: [{ optionName: 'Size', name: v.size }], price, sku: v.sku })),\n      },\n    },\n    // The first size's SKU, used to check if the product already exists in Shopify.\n    firstSku: variants[0].sku,\n  };\n}\n// The cleaned-up order from the earlier \"Verify & Normalize Order\" node.\nconst order = $('Verify & Normalize Order').item.json;\n// Compare the order's SKUs with the items the ERP returned. Any problems become \"hold reasons\".\nconst holdReasons = matchOrderSkus(order, $json.data || []);\n// Send one item on to the next node.\nreturn { json: {\n  // Copy every field from the order.\n  ...order,\n  // true if every SKU is known in the ERP (no hold reasons).\n  allKnown: holdReasons.length === 0,\n  holdReasons,\n  // If there are problems, no Sales Order (null). Otherwise build the ERP Sales Order.\n  salesOrder: holdReasons.length ? null : buildSalesOrder(order, {\n    // The one customer used for all web orders (default \"Shopify Web Orders\").\n    customer: $env.SHOPIFY_ERP_CUSTOMER || 'Shopify Web Orders',\n    // The ERP company and warehouse, from the environment settings.\n    company: $env.ERPNEXT_COMPANY,\n    warehouse: $env.ERPNEXT_DEFAULT_WAREHOUSE,\n  }),\n} };\n"
+      },
+      "id": "f0103f7a-af80-4892-a23d-4892fd017753",
+      "name": "Match SKUs & Build Sales Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "bf055df2-dea1-499a-aa4b-35c34302611b",
+              "leftValue": "={{ $json.allKnown }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6a3d371d-4b8b-4003-a4bb-7dcc55e5b73c",
+      "name": "All SKUs Known?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ERPNEXT_BASE_URL }}/api/resource/Sales Order",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.salesOrder) }}",
+        "options": {}
+      },
+      "id": "0db89731-b11e-470b-ada4-3cdba1b7edeb",
+      "name": "Create Sales Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        -100
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsErpnextApiCred",
+          "name": "ERPNext API (integration user)"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.ERPNEXT_BASE_URL }}/api/resource/Sales Order/{{ encodeURIComponent($json.data.name) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ docstatus: 1 }) }}",
+        "options": {}
+      },
+      "id": "dfa1724b-acab-4893-a157-14468cd4ec6f",
+      "name": "Submit Sales Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2860,
+        -100
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lsErpnextApiCred",
+          "name": "ERPNext API (integration user)"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Mode: Run Once for Each Item\n// Success path: the Shopify order is now a Sales Order in ERPNext.\n// ---- lib/sync-helpers.js ------------------------------------------------\n// Error parsing, audit rows, Airtable write-backs and PO explosion shared by\n// the n8n Code nodes. Pure functions only — no n8n globals in here.\n\n// Frappe/ERPNext maps exceptions to HTTP codes; knowing them speeds up triage.\n// Lookup table: HTTP status code → a short, readable error category.\nconst ERP_ERROR_CATEGORIES = {\n  401: 'auth',            // AuthenticationError — bad/expired API key:secret\n  403: 'permission',      // PermissionError — role lacks perm on the DocType\n  404: 'not_found',       // DoesNotExistError\n  409: 'duplicate',       // DuplicateEntryError — item_code already exists\n  417: 'validation',      // ValidationError / LinkValidationError / MandatoryError\n  429: 'rate_limited',\n};\n\n// Pulls a JSON object out of an error string. n8n 2.x formats HTTP errors as\n//   417 - \"{\\\"exc_type\\\":\\\"LinkValidationError\\\",...}\"\n// i.e. the response body as a JSON *string literal*, so it may need two parses.\nfunction extractJsonBody(part) {\n  // Already an object? Nothing to do, return it.\n  if (part && typeof part === 'object') return part;\n  // Make it text, strip a leading \"417 - \" style status code, and trim spaces.\n  const s = String(part || '').replace(/^\\s*\\d{3} - /, '').trim();\n  // Two things to try: the whole text, and just the part from the first \"{\" to the last \"}\".\n  const attempts = [s, s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)];\n  // Try each one in turn.\n  for (const candidate of attempts) {\n    try {\n      // Read the text as JSON.\n      let v = JSON.parse(candidate);\n      // If that gave us more text (JSON inside a string), read it as JSON again.\n      if (typeof v === 'string') v = JSON.parse(v);\n      // Got a real object? Return it.\n      if (v && typeof v === 'object') return v;\n    } catch { /* try the next shape */ }\n  }\n  // Nothing worked: no JSON found.\n  return null;\n}\n\n// Normalizes an n8n error-output item ({ error: {...} }) from an HTTP Request node.\n// Shape verified against n8n 2.39.6 (see tests); kept defensive for other versions.\nfunction summarizeHttpError(itemJson) {\n  // The error details: inside \"error\" if present, else the item itself, else an empty object.\n  const e = (itemJson && itemJson.error) || itemJson || {};\n  // Gather every bit of error text we can find into one string, separated by \" | \".\n  const text = [e.message, typeof e.description === 'string' ? e.description : '', typeof e === 'string' ? e : '']\n    // Drop the empty bits.\n    .filter(Boolean)\n    // Make sure each bit is text.\n    .map(String)\n    // Join them.\n    .join(' | ');\n\n  // Look for the HTTP status code in the usual fields (null if none found).\n  let httpStatus = Number(e.httpCode || e.statusCode || e.status) || null;\n  // Not found? Try to read it from the error text instead.\n  if (!httpStatus) {\n    // Only trust the shapes n8n/axios actually emit (\"409 - ...\", \"status code 502\"),\n    // so digits inside IPs or ports (ECONNREFUSED 172.18.0.5:8080) aren't misread.\n    const m = text.match(/^([1-5]\\d{2}) - /) || text.match(/status code ([1-5]\\d{2})\\b/i);\n    // Found a match? Use the 3-digit number. Otherwise still null.\n    httpStatus = m ? Number(m[1]) : null;\n  }\n\n  // Pull exc_type / _server_messages (ERPNext) or error.message (Airtable) out of the body.\n  // The error type name, e.g. \"LinkValidationError\".\n  let excType = null;\n  // The human-readable message from the server.\n  let serverMessage = null;\n  // Look for a JSON body in the message, or failing that in the description.\n  const body = extractJsonBody(e.message) || extractJsonBody(e.description);\n  // Only dig further if we found one.\n  if (body) {\n    // ERPNext puts the type in exc_type; Airtable puts it in error.type.\n    excType = body.exc_type || (body.error && body.error.type) || null;\n    // ERPNext style 1: a list of messages, itself stored as JSON text.\n    if (body._server_messages) {\n      try {\n        // Read the list, then read each message (also JSON) and keep its \"message\" part.\n        serverMessage = JSON.parse(body._server_messages)\n          .map((m) => { try { return JSON.parse(m).message; } catch { return m; } })\n          // Join them with \"; \".\n          .join('; ');\n      } catch { /* malformed — ignore */ }\n    // ERPNext style 2: a Python traceback. The last line holds the actual error.\n    } else if (body.exception) {\n      serverMessage = String(body.exception).split('\\n').pop();\n    // Airtable style: error.message.\n    } else if (body.error && body.error.message) {\n      serverMessage = body.error.message;\n    }\n    // Remove any HTML tags (like <b>) from the message.\n    if (serverMessage) serverMessage = serverMessage.replace(/<[^>]+>/g, '');\n  }\n\n  // Pick a category: from the table above, else \"server\" for 5xx codes,\n  // \"client\" for other codes, or \"network\" if there was no code at all.\n  const category = ERP_ERROR_CATEGORIES[httpStatus] || (httpStatus >= 500 ? 'server' : httpStatus ? 'client' : 'network');\n  // These kinds of error usually fix themselves, so it's worth trying again later.\n  const retryable = category === 'server' || category === 'rate_limited' || category === 'network';\n  // Plain-text bodies arrive JSON-quoted (sometimes twice): 502 - \"\\\"Bad Gateway\\\"\".\n  // Backup message: the raw error text without the leading status code.\n  let fallback = String(e.message || text || 'Unknown error').replace(/^\\s*\\d{3} - /, '');\n  // Remove up to two layers of JSON quotes.\n  for (let i = 0; i < 2; i++) {\n    try {\n      // Read it as JSON.\n      const v = JSON.parse(fallback);\n      // Not plain text underneath? Stop and keep what we have.\n      if (typeof v !== 'string') break;\n      // Keep the unquoted text.\n      fallback = v;\n    } catch { break; }\n  }\n  // Final message, e.g. \"HTTP 417 — LinkValidationError — Item Group X not found\".\n  const message = [httpStatus && `HTTP ${httpStatus}`, excType, serverMessage || fallback]\n    // Drop empty parts.\n    .filter(Boolean)\n    // Join with \" — \".\n    .join(' — ')\n    // Cut to 1000 characters.\n    .slice(0, 1000);\n\n  // Hand back the summary.\n  return { httpStatus, category, retryable, excType, message };\n}\n\n// One row for audit.sync_audit_logs. Column order matches the INSERT in the Postgres nodes.\n// Takes friendly names (f.entityId) and returns database column names (entity_id).\n// \"|| null\" means: use null when the value is missing.\nfunction auditRow(f) {\n  return {\n    // The n8n run ID as text.\n    execution_id: f.executionId != null ? String(f.executionId) : null,\n    workflow_name: f.workflowName || null,\n    // Where the data came from and where it was going.\n    source_system: f.source,\n    target_system: f.target,\n    // What kind of thing (e.g. sales_order) and which one.\n    entity_type: f.entityType,\n    entity_id: f.entityId || null,\n    sku: f.sku || null,\n    // What we tried and how it went.\n    action: f.action,\n    status: f.status,\n    // \"??\" keeps 0 but turns missing into null.\n    http_status: f.httpStatus ?? null,\n    // Error text cut to 1000 characters, or null if there was no error.\n    error_message: f.errorMessage ? String(f.errorMessage).slice(0, 1000) : null,\n    approved_at: f.approvedAt || null,\n    // Extra details (empty object if none).\n    payload: f.payload || {},\n  };\n}\n\n// PATCH body for writing sync results back onto the Airtable Colorways record.\n// Transient failures go back to \"Pending\" so the safety-net poll retries them;\n// permanent ones go to \"Error\" for a human. (n8n ignores Retry On Fail on nodes that\n// use an error output, so this is the retry mechanism for ERP calls. See RUNBOOK §3.)\nfunction syncWriteback({ status, erpItemCode, errorMessage, nowIso, retryable = false }) {\n  // Did the sync work?\n  const ok = status === 'success';\n  return {\n    fields: {\n      // Worked → \"Synced\". Temporary failure → \"Pending\" (retry). Permanent failure → \"Error\".\n      'Sync Status': ok ? 'Synced' : retryable ? 'Pending' : 'Error',\n      // Only on success: also save the ERP item code.\n      ...(ok && erpItemCode ? { 'ERP Item Code': erpItemCode } : {}),\n      // Clear the error on success; otherwise save it (cut to 5000 characters).\n      'Last Sync Error': ok ? '' : String(errorMessage || '').slice(0, 5000),\n      // When this happened.\n      'Last Synced At': nowIso,\n    },\n    // Let Airtable convert values to the right field type.\n    typecast: true,\n  };\n}\n\n// Airtable formula: {Field}='value' with quotes/backslashes escaped.\nfunction airtableEquals(field, value) {\n  // Make the value text, then put a \"\\\" before any \"\\\" or \"'\" so they can't break the formula.\n  const escaped = String(value ?? '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");\n  // Build the formula, e.g. {ERP Item Code}='S-0108-0901'.\n  return `{${field}}='${escaped}'`;\n}\n\n// ERPNext Purchase Order doc → one row per COLORWAY (POs are placed per size variant,\n// S-0108-0901-10, but Production tracks the colorway S-0108-0901): summed qty, earliest\n// schedule date and a per-size breakdown. Needs lib/product-model.js for parseSku.\nfunction explodePurchaseOrder(po) {\n  // Running totals: colorway SKU → { qty, date, sizes }.\n  const byColorway = new Map();\n  // Go through each line on the PO.\n  for (const line of po.items || []) {\n    // Split the SKU into its parts (division, style, colorway, size).\n    const parsed = parseSku(line.item_code);\n    // The colorway SKU (without the size), or the raw code if it couldn't be parsed.\n    const base = parsed ? `${parsed.divisionCode}-${parsed.style}-${parsed.colorway}` : line.item_code;\n    // The size label (e.g. \"Preemie\"), or null if the SKU has no size.\n    const size = parsed && parsed.sizeCode ? sizeLabelFor(parsed.divisionCode, parsed.sizeCode) : null;\n    // Quantity as a number (0 if missing).\n    const qty = Number(line.qty) || 0;\n    // Delivery date: the line's own date, else the PO's date, else none.\n    const date = line.schedule_date || po.schedule_date || null;\n    // First line for this colorway? Start its running totals at zero.\n    if (!byColorway.has(base)) byColorway.set(base, { qty: 0, date: null, sizes: [] });\n    // Get the running totals for this colorway.\n    const agg = byColorway.get(base);\n    // Add this line's quantity.\n    agg.qty += qty;\n    // Keep the earliest date seen.\n    if (date && (!agg.date || date < agg.date)) agg.date = date;\n    // Note the size and quantity, e.g. \"Preemie ×12\".\n    if (size) agg.sizes.push(`${size} ×${qty}`);\n  }\n  // Turn the totals into one output row per colorway.\n  return [...byColorway.entries()].map(([base, agg]) => ({\n    po_number: po.name,\n    supplier: po.supplier,\n    // The PO status, or work it out: docstatus 1 means submitted, otherwise draft.\n    po_status: po.status || (po.docstatus === 1 ? 'Submitted' : 'Draft'),\n    item_code: base,\n    qty: agg.qty,\n    expected_delivery: agg.date,\n    // Formula used to find the matching Airtable record.\n    airtable_formula: airtableEquals('ERP Item Code', base),\n    // The fields to write onto that Airtable record.\n    airtable_fields: {\n      'PO Number': po.name,\n      'PO Qty': agg.qty,\n      // e.g. \"Preemie ×12, Newborn ×24\" (null if no sizes).\n      'PO Size Breakdown': agg.sizes.join(', ') || null,\n      Vendor: po.supplier,\n      'Expected Delivery': agg.date,\n      'PO Status': po.status || null,\n    },\n  }));\n}\n// The order data from the earlier \"Match SKUs & Build Sales Order\" node.\nconst order = $('Match SKUs & Build Sales Order').item.json;\n// Output one audit log row saying \"success\".\nreturn { json: auditRow({\n  // Which n8n run and workflow this was.\n  executionId: $execution.id, workflowName: $workflow.name,\n  // Data went from Shopify to ERPNext, as a Sales Order.\n  source: 'shopify', target: 'erpnext', entityType: 'sales_order',\n  // The order ID, its first SKU, what we did, and that it worked.\n  entityId: order.orderGid, sku: order.skus[0], action: 'import_order', status: 'success', httpStatus: 200,\n  // Extra details, including the new Sales Order's name from the ERP's reply.\n  payload: { order_name: order.orderName, sales_order: $json.data && $json.data.name, source: order.source,\n             skus: order.skus, test: order.test },\n}) };\n"
+      },
+      "id": "7a296452-29b0-4c58-a5a8-094a782b6739",
+      "name": "Result: Order Imported",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Mode: Run Once for Each Item\n// A Sales Order with this Shopify order ID already exists: Shopify retried the webhook,\n// or the poll re-saw an imported order. Idempotency working as designed.\n// ---- lib/sync-helpers.js ------------------------------------------------\n// Error parsing, audit rows, Airtable write-backs and PO explosion shared by\n// the n8n Code nodes. Pure functions only — no n8n globals in here.\n\n// Frappe/ERPNext maps exceptions to HTTP codes; knowing them speeds up triage.\n// Lookup table: HTTP status code → a short, readable error category.\nconst ERP_ERROR_CATEGORIES = {\n  401: 'auth',            // AuthenticationError — bad/expired API key:secret\n  403: 'permission',      // PermissionError — role lacks perm on the DocType\n  404: 'not_found',       // DoesNotExistError\n  409: 'duplicate',       // DuplicateEntryError — item_code already exists\n  417: 'validation',      // ValidationError / LinkValidationError / MandatoryError\n  429: 'rate_limited',\n};\n\n// Pulls a JSON object out of an error string. n8n 2.x formats HTTP errors as\n//   417 - \"{\\\"exc_type\\\":\\\"LinkValidationError\\\",...}\"\n// i.e. the response body as a JSON *string literal*, so it may need two parses.\nfunction extractJsonBody(part) {\n  // Already an object? Nothing to do, return it.\n  if (part && typeof part === 'object') return part;\n  // Make it text, strip a leading \"417 - \" style status code, and trim spaces.\n  const s = String(part || '').replace(/^\\s*\\d{3} - /, '').trim();\n  // Two things to try: the whole text, and just the part from the first \"{\" to the last \"}\".\n  const attempts = [s, s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)];\n  // Try each one in turn.\n  for (const candidate of attempts) {\n    try {\n      // Read the text as JSON.\n      let v = JSON.parse(candidate);\n      // If that gave us more text (JSON inside a string), read it as JSON again.\n      if (typeof v === 'string') v = JSON.parse(v);\n      // Got a real object? Return it.\n      if (v && typeof v === 'object') return v;\n    } catch { /* try the next shape */ }\n  }\n  // Nothing worked: no JSON found.\n  return null;\n}\n\n// Normalizes an n8n error-output item ({ error: {...} }) from an HTTP Request node.\n// Shape verified against n8n 2.39.6 (see tests); kept defensive for other versions.\nfunction summarizeHttpError(itemJson) {\n  // The error details: inside \"error\" if present, else the item itself, else an empty object.\n  const e = (itemJson && itemJson.error) || itemJson || {};\n  // Gather every bit of error text we can find into one string, separated by \" | \".\n  const text = [e.message, typeof e.description === 'string' ? e.description : '', typeof e === 'string' ? e : '']\n    // Drop the empty bits.\n    .filter(Boolean)\n    // Make sure each bit is text.\n    .map(String)\n    // Join them.\n    .join(' | ');\n\n  // Look for the HTTP status code in the usual fields (null if none found).\n  let httpStatus = Number(e.httpCode || e.statusCode || e.status) || null;\n  // Not found? Try to read it from the error text instead.\n  if (!httpStatus) {\n    // Only trust the shapes n8n/axios actually emit (\"409 - ...\", \"status code 502\"),\n    // so digits inside IPs or ports (ECONNREFUSED 172.18.0.5:8080) aren't misread.\n    const m = text.match(/^([1-5]\\d{2}) - /) || text.match(/status code ([1-5]\\d{2})\\b/i);\n    // Found a match? Use the 3-digit number. Otherwise still null.\n    httpStatus = m ? Number(m[1]) : null;\n  }\n\n  // Pull exc_type / _server_messages (ERPNext) or error.message (Airtable) out of the body.\n  // The error type name, e.g. \"LinkValidationError\".\n  let excType = null;\n  // The human-readable message from the server.\n  let serverMessage = null;\n  // Look for a JSON body in the message, or failing that in the description.\n  const body = extractJsonBody(e.message) || extractJsonBody(e.description);\n  // Only dig further if we found one.\n  if (body) {\n    // ERPNext puts the type in exc_type; Airtable puts it in error.type.\n    excType = body.exc_type || (body.error && body.error.type) || null;\n    // ERPNext style 1: a list of messages, itself stored as JSON text.\n    if (body._server_messages) {\n      try {\n        // Read the list, then read each message (also JSON) and keep its \"message\" part.\n        serverMessage = JSON.parse(body._server_messages)\n          .map((m) => { try { return JSON.parse(m).message; } catch { return m; } })\n          // Join them with \"; \".\n          .join('; ');\n      } catch { /* malformed — ignore */ }\n    // ERPNext style 2: a Python traceback. The last line holds the actual error.\n    } else if (body.exception) {\n      serverMessage = String(body.exception).split('\\n').pop();\n    // Airtable style: error.message.\n    } else if (body.error && body.error.message) {\n      serverMessage = body.error.message;\n    }\n    // Remove any HTML tags (like <b>) from the message.\n    if (serverMessage) serverMessage = serverMessage.replace(/<[^>]+>/g, '');\n  }\n\n  // Pick a category: from the table above, else \"server\" for 5xx codes,\n  // \"client\" for other codes, or \"network\" if there was no code at all.\n  const category = ERP_ERROR_CATEGORIES[httpStatus] || (httpStatus >= 500 ? 'server' : httpStatus ? 'client' : 'network');\n  // These kinds of error usually fix themselves, so it's worth trying again later.\n  const retryable = category === 'server' || category === 'rate_limited' || category === 'network';\n  // Plain-text bodies arrive JSON-quoted (sometimes twice): 502 - \"\\\"Bad Gateway\\\"\".\n  // Backup message: the raw error text without the leading status code.\n  let fallback = String(e.message || text || 'Unknown error').replace(/^\\s*\\d{3} - /, '');\n  // Remove up to two layers of JSON quotes.\n  for (let i = 0; i < 2; i++) {\n    try {\n      // Read it as JSON.\n      const v = JSON.parse(fallback);\n      // Not plain text underneath? Stop and keep what we have.\n      if (typeof v !== 'string') break;\n      // Keep the unquoted text.\n      fallback = v;\n    } catch { break; }\n  }\n  // Final message, e.g. \"HTTP 417 — LinkValidationError — Item Group X not found\".\n  const message = [httpStatus && `HTTP ${httpStatus}`, excType, serverMessage || fallback]\n    // Drop empty parts.\n    .filter(Boolean)\n    // Join with \" — \".\n    .join(' — ')\n    // Cut to 1000 characters.\n    .slice(0, 1000);\n\n  // Hand back the summary.\n  return { httpStatus, category, retryable, excType, message };\n}\n\n// One row for audit.sync_audit_logs. Column order matches the INSERT in the Postgres nodes.\n// Takes friendly names (f.entityId) and returns database column names (entity_id).\n// \"|| null\" means: use null when the value is missing.\nfunction auditRow(f) {\n  return {\n    // The n8n run ID as text.\n    execution_id: f.executionId != null ? String(f.executionId) : null,\n    workflow_name: f.workflowName || null,\n    // Where the data came from and where it was going.\n    source_system: f.source,\n    target_system: f.target,\n    // What kind of thing (e.g. sales_order) and which one.\n    entity_type: f.entityType,\n    entity_id: f.entityId || null,\n    sku: f.sku || null,\n    // What we tried and how it went.\n    action: f.action,\n    status: f.status,\n    // \"??\" keeps 0 but turns missing into null.\n    http_status: f.httpStatus ?? null,\n    // Error text cut to 1000 characters, or null if there was no error.\n    error_message: f.errorMessage ? String(f.errorMessage).slice(0, 1000) : null,\n    approved_at: f.approvedAt || null,\n    // Extra details (empty object if none).\n    payload: f.payload || {},\n  };\n}\n\n// PATCH body for writing sync results back onto the Airtable Colorways record.\n// Transient failures go back to \"Pending\" so the safety-net poll retries them;\n// permanent ones go to \"Error\" for a human. (n8n ignores Retry On Fail on nodes that\n// use an error output, so this is the retry mechanism for ERP calls. See RUNBOOK §3.)\nfunction syncWriteback({ status, erpItemCode, errorMessage, nowIso, retryable = false }) {\n  // Did the sync work?\n  const ok = status === 'success';\n  return {\n    fields: {\n      // Worked → \"Synced\". Temporary failure → \"Pending\" (retry). Permanent failure → \"Error\".\n      'Sync Status': ok ? 'Synced' : retryable ? 'Pending' : 'Error',\n      // Only on success: also save the ERP item code.\n      ...(ok && erpItemCode ? { 'ERP Item Code': erpItemCode } : {}),\n      // Clear the error on success; otherwise save it (cut to 5000 characters).\n      'Last Sync Error': ok ? '' : String(errorMessage || '').slice(0, 5000),\n      // When this happened.\n      'Last Synced At': nowIso,\n    },\n    // Let Airtable convert values to the right field type.\n    typecast: true,\n  };\n}\n\n// Airtable formula: {Field}='value' with quotes/backslashes escaped.\nfunction airtableEquals(field, value) {\n  // Make the value text, then put a \"\\\" before any \"\\\" or \"'\" so they can't break the formula.\n  const escaped = String(value ?? '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");\n  // Build the formula, e.g. {ERP Item Code}='S-0108-0901'.\n  return `{${field}}='${escaped}'`;\n}\n\n// ERPNext Purchase Order doc → one row per COLORWAY (POs are placed per size variant,\n// S-0108-0901-10, but Production tracks the colorway S-0108-0901): summed qty, earliest\n// schedule date and a per-size breakdown. Needs lib/product-model.js for parseSku.\nfunction explodePurchaseOrder(po) {\n  // Running totals: colorway SKU → { qty, date, sizes }.\n  const byColorway = new Map();\n  // Go through each line on the PO.\n  for (const line of po.items || []) {\n    // Split the SKU into its parts (division, style, colorway, size).\n    const parsed = parseSku(line.item_code);\n    // The colorway SKU (without the size), or the raw code if it couldn't be parsed.\n    const base = parsed ? `${parsed.divisionCode}-${parsed.style}-${parsed.colorway}` : line.item_code;\n    // The size label (e.g. \"Preemie\"), or null if the SKU has no size.\n    const size = parsed && parsed.sizeCode ? sizeLabelFor(parsed.divisionCode, parsed.sizeCode) : null;\n    // Quantity as a number (0 if missing).\n    const qty = Number(line.qty) || 0;\n    // Delivery date: the line's own date, else the PO's date, else none.\n    const date = line.schedule_date || po.schedule_date || null;\n    // First line for this colorway? Start its running totals at zero.\n    if (!byColorway.has(base)) byColorway.set(base, { qty: 0, date: null, sizes: [] });\n    // Get the running totals for this colorway.\n    const agg = byColorway.get(base);\n    // Add this line's quantity.\n    agg.qty += qty;\n    // Keep the earliest date seen.\n    if (date && (!agg.date || date < agg.date)) agg.date = date;\n    // Note the size and quantity, e.g. \"Preemie ×12\".\n    if (size) agg.sizes.push(`${size} ×${qty}`);\n  }\n  // Turn the totals into one output row per colorway.\n  return [...byColorway.entries()].map(([base, agg]) => ({\n    po_number: po.name,\n    supplier: po.supplier,\n    // The PO status, or work it out: docstatus 1 means submitted, otherwise draft.\n    po_status: po.status || (po.docstatus === 1 ? 'Submitted' : 'Draft'),\n    item_code: base,\n    qty: agg.qty,\n    expected_delivery: agg.date,\n    // Formula used to find the matching Airtable record.\n    airtable_formula: airtableEquals('ERP Item Code', base),\n    // The fields to write onto that Airtable record.\n    airtable_fields: {\n      'PO Number': po.name,\n      'PO Qty': agg.qty,\n      // e.g. \"Preemie ×12, Newborn ×24\" (null if no sizes).\n      'PO Size Breakdown': agg.sizes.join(', ') || null,\n      Vendor: po.supplier,\n      'Expected Delivery': agg.date,\n      'PO Status': po.status || null,\n    },\n  }));\n}\n// The cleaned-up order from the earlier \"Verify & Normalize Order\" node.\nconst order = $('Verify & Normalize Order').item.json;\n// Output one audit log row saying \"skipped\" (not an error: we just didn't import it twice).\nreturn { json: { ...auditRow({\n  // Which n8n run and workflow this was.\n  executionId: $execution.id, workflowName: $workflow.name,\n  // Data was going from Shopify to ERPNext, as a Sales Order.\n  source: 'shopify', target: 'erpnext', entityType: 'sales_order',\n  // The order ID, its first SKU, what we tried, and the outcome.\n  entityId: order.orderGid, sku: order.skus[0], action: 'import_order', status: 'skipped',\n  // Name the existing Sales Order ($json.data[0] is the one the ERP lookup found).\n  errorMessage: `Already imported as ${($json.data[0] || {}).name}`,\n  // Extra details saved as JSON.\n  payload: { order_name: order.orderName, source: order.source, webhook_id: order.webhookId },\n// Also pass along where the order came from (\"webhook\" or \"poll\").\n}), source: order.source } };\n"
+      },
+      "id": "4c776371-975d-47a7-a309-976445a5c0f0",
+      "name": "Result: Duplicate Skipped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Mode: Run Once for Each Item\n// Order can't be imported as-is (missing/unknown/disabled SKU, no lines…).\n// Alert once (webhook), retry quietly: the hourly reconcile re-fetches held orders by ID\n// for up to 7 days, so fixing the SKU in the ERP is enough. No manual replay needed.\n// ---- lib/sync-helpers.js ------------------------------------------------\n// Error parsing, audit rows, Airtable write-backs and PO explosion shared by\n// the n8n Code nodes. Pure functions only — no n8n globals in here.\n\n// Frappe/ERPNext maps exceptions to HTTP codes; knowing them speeds up triage.\n// Lookup table: HTTP status code → a short, readable error category.\nconst ERP_ERROR_CATEGORIES = {\n  401: 'auth',            // AuthenticationError — bad/expired API key:secret\n  403: 'permission',      // PermissionError — role lacks perm on the DocType\n  404: 'not_found',       // DoesNotExistError\n  409: 'duplicate',       // DuplicateEntryError — item_code already exists\n  417: 'validation',      // ValidationError / LinkValidationError / MandatoryError\n  429: 'rate_limited',\n};\n\n// Pulls a JSON object out of an error string. n8n 2.x formats HTTP errors as\n//   417 - \"{\\\"exc_type\\\":\\\"LinkValidationError\\\",...}\"\n// i.e. the response body as a JSON *string literal*, so it may need two parses.\nfunction extractJsonBody(part) {\n  // Already an object? Nothing to do, return it.\n  if (part && typeof part === 'object') return part;\n  // Make it text, strip a leading \"417 - \" style status code, and trim spaces.\n  const s = String(part || '').replace(/^\\s*\\d{3} - /, '').trim();\n  // Two things to try: the whole text, and just the part from the first \"{\" to the last \"}\".\n  const attempts = [s, s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)];\n  // Try each one in turn.\n  for (const candidate of attempts) {\n    try {\n      // Read the text as JSON.\n      let v = JSON.parse(candidate);\n      // If that gave us more text (JSON inside a string), read it as JSON again.\n      if (typeof v === 'string') v = JSON.parse(v);\n      // Got a real object? Return it.\n      if (v && typeof v === 'object') return v;\n    } catch { /* try the next shape */ }\n  }\n  // Nothing worked: no JSON found.\n  return null;\n}\n\n// Normalizes an n8n error-output item ({ error: {...} }) from an HTTP Request node.\n// Shape verified against n8n 2.39.6 (see tests); kept defensive for other versions.\nfunction summarizeHttpError(itemJson) {\n  // The error details: inside \"error\" if present, else the item itself, else an empty object.\n  const e = (itemJson && itemJson.error) || itemJson || {};\n  // Gather every bit of error text we can find into one string, separated by \" | \".\n  const text = [e.message, typeof e.description === 'string' ? e.description : '', typeof e === 'string' ? e : '']\n    // Drop the empty bits.\n    .filter(Boolean)\n    // Make sure each bit is text.\n    .map(String)\n    // Join them.\n    .join(' | ');\n\n  // Look for the HTTP status code in the usual fields (null if none found).\n  let httpStatus = Number(e.httpCode || e.statusCode || e.status) || null;\n  // Not found? Try to read it from the error text instead.\n  if (!httpStatus) {\n    // Only trust the shapes n8n/axios actually emit (\"409 - ...\", \"status code 502\"),\n    // so digits inside IPs or ports (ECONNREFUSED 172.18.0.5:8080) aren't misread.\n    const m = text.match(/^([1-5]\\d{2}) - /) || text.match(/status code ([1-5]\\d{2})\\b/i);\n    // Found a match? Use the 3-digit number. Otherwise still null.\n    httpStatus = m ? Number(m[1]) : null;\n  }\n\n  // Pull exc_type / _server_messages (ERPNext) or error.message (Airtable) out of the body.\n  // The error type name, e.g. \"LinkValidationError\".\n  let excType = null;\n  // The human-readable message from the server.\n  let serverMessage = null;\n  // Look for a JSON body in the message, or failing that in the description.\n  const body = extractJsonBody(e.message) || extractJsonBody(e.description);\n  // Only dig further if we found one.\n  if (body) {\n    // ERPNext puts the type in exc_type; Airtable puts it in error.type.\n    excType = body.exc_type || (body.error && body.error.type) || null;\n    // ERPNext style 1: a list of messages, itself stored as JSON text.\n    if (body._server_messages) {\n      try {\n        // Read the list, then read each message (also JSON) and keep its \"message\" part.\n        serverMessage = JSON.parse(body._server_messages)\n          .map((m) => { try { return JSON.parse(m).message; } catch { return m; } })\n          // Join them with \"; \".\n          .join('; ');\n      } catch { /* malformed — ignore */ }\n    // ERPNext style 2: a Python traceback. The last line holds the actual error.\n    } else if (body.exception) {\n      serverMessage = String(body.exception).split('\\n').pop();\n    // Airtable style: error.message.\n    } else if (body.error && body.error.message) {\n      serverMessage = body.error.message;\n    }\n    // Remove any HTML tags (like <b>) from the message.\n    if (serverMessage) serverMessage = serverMessage.replace(/<[^>]+>/g, '');\n  }\n\n  // Pick a category: from the table above, else \"server\" for 5xx codes,\n  // \"client\" for other codes, or \"network\" if there was no code at all.\n  const category = ERP_ERROR_CATEGORIES[httpStatus] || (httpStatus >= 500 ? 'server' : httpStatus ? 'client' : 'network');\n  // These kinds of error usually fix themselves, so it's worth trying again later.\n  const retryable = category === 'server' || category === 'rate_limited' || category === 'network';\n  // Plain-text bodies arrive JSON-quoted (sometimes twice): 502 - \"\\\"Bad Gateway\\\"\".\n  // Backup message: the raw error text without the leading status code.\n  let fallback = String(e.message || text || 'Unknown error').replace(/^\\s*\\d{3} - /, '');\n  // Remove up to two layers of JSON quotes.\n  for (let i = 0; i < 2; i++) {\n    try {\n      // Read it as JSON.\n      const v = JSON.parse(fallback);\n      // Not plain text underneath? Stop and keep what we have.\n      if (typeof v !== 'string') break;\n      // Keep the unquoted text.\n      fallback = v;\n    } catch { break; }\n  }\n  // Final message, e.g. \"HTTP 417 — LinkValidationError — Item Group X not found\".\n  const message = [httpStatus && `HTTP ${httpStatus}`, excType, serverMessage || fallback]\n    // Drop empty parts.\n    .filter(Boolean)\n    // Join with \" — \".\n    .join(' — ')\n    // Cut to 1000 characters.\n    .slice(0, 1000);\n\n  // Hand back the summary.\n  return { httpStatus, category, retryable, excType, message };\n}\n\n// One row for audit.sync_audit_logs. Column order matches the INSERT in the Postgres nodes.\n// Takes friendly names (f.entityId) and returns database column names (entity_id).\n// \"|| null\" means: use null when the value is missing.\nfunction auditRow(f) {\n  return {\n    // The n8n run ID as text.\n    execution_id: f.executionId != null ? String(f.executionId) : null,\n    workflow_name: f.workflowName || null,\n    // Where the data came from and where it was going.\n    source_system: f.source,\n    target_system: f.target,\n    // What kind of thing (e.g. sales_order) and which one.\n    entity_type: f.entityType,\n    entity_id: f.entityId || null,\n    sku: f.sku || null,\n    // What we tried and how it went.\n    action: f.action,\n    status: f.status,\n    // \"??\" keeps 0 but turns missing into null.\n    http_status: f.httpStatus ?? null,\n    // Error text cut to 1000 characters, or null if there was no error.\n    error_message: f.errorMessage ? String(f.errorMessage).slice(0, 1000) : null,\n    approved_at: f.approvedAt || null,\n    // Extra details (empty object if none).\n    payload: f.payload || {},\n  };\n}\n\n// PATCH body for writing sync results back onto the Airtable Colorways record.\n// Transient failures go back to \"Pending\" so the safety-net poll retries them;\n// permanent ones go to \"Error\" for a human. (n8n ignores Retry On Fail on nodes that\n// use an error output, so this is the retry mechanism for ERP calls. See RUNBOOK §3.)\nfunction syncWriteback({ status, erpItemCode, errorMessage, nowIso, retryable = false }) {\n  // Did the sync work?\n  const ok = status === 'success';\n  return {\n    fields: {\n      // Worked → \"Synced\". Temporary failure → \"Pending\" (retry). Permanent failure → \"Error\".\n      'Sync Status': ok ? 'Synced' : retryable ? 'Pending' : 'Error',\n      // Only on success: also save the ERP item code.\n      ...(ok && erpItemCode ? { 'ERP Item Code': erpItemCode } : {}),\n      // Clear the error on success; otherwise save it (cut to 5000 characters).\n      'Last Sync Error': ok ? '' : String(errorMessage || '').slice(0, 5000),\n      // When this happened.\n      'Last Synced At': nowIso,\n    },\n    // Let Airtable convert values to the right field type.\n    typecast: true,\n  };\n}\n\n// Airtable formula: {Field}='value' with quotes/backslashes escaped.\nfunction airtableEquals(field, value) {\n  // Make the value text, then put a \"\\\" before any \"\\\" or \"'\" so they can't break the formula.\n  const escaped = String(value ?? '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");\n  // Build the formula, e.g. {ERP Item Code}='S-0108-0901'.\n  return `{${field}}='${escaped}'`;\n}\n\n// ERPNext Purchase Order doc → one row per COLORWAY (POs are placed per size variant,\n// S-0108-0901-10, but Production tracks the colorway S-0108-0901): summed qty, earliest\n// schedule date and a per-size breakdown. Needs lib/product-model.js for parseSku.\nfunction explodePurchaseOrder(po) {\n  // Running totals: colorway SKU → { qty, date, sizes }.\n  const byColorway = new Map();\n  // Go through each line on the PO.\n  for (const line of po.items || []) {\n    // Split the SKU into its parts (division, style, colorway, size).\n    const parsed = parseSku(line.item_code);\n    // The colorway SKU (without the size), or the raw code if it couldn't be parsed.\n    const base = parsed ? `${parsed.divisionCode}-${parsed.style}-${parsed.colorway}` : line.item_code;\n    // The size label (e.g. \"Preemie\"), or null if the SKU has no size.\n    const size = parsed && parsed.sizeCode ? sizeLabelFor(parsed.divisionCode, parsed.sizeCode) : null;\n    // Quantity as a number (0 if missing).\n    const qty = Number(line.qty) || 0;\n    // Delivery date: the line's own date, else the PO's date, else none.\n    const date = line.schedule_date || po.schedule_date || null;\n    // First line for this colorway? Start its running totals at zero.\n    if (!byColorway.has(base)) byColorway.set(base, { qty: 0, date: null, sizes: [] });\n    // Get the running totals for this colorway.\n    const agg = byColorway.get(base);\n    // Add this line's quantity.\n    agg.qty += qty;\n    // Keep the earliest date seen.\n    if (date && (!agg.date || date < agg.date)) agg.date = date;\n    // Note the size and quantity, e.g. \"Preemie ×12\".\n    if (size) agg.sizes.push(`${size} ×${qty}`);\n  }\n  // Turn the totals into one output row per colorway.\n  return [...byColorway.entries()].map(([base, agg]) => ({\n    po_number: po.name,\n    supplier: po.supplier,\n    // The PO status, or work it out: docstatus 1 means submitted, otherwise draft.\n    po_status: po.status || (po.docstatus === 1 ? 'Submitted' : 'Draft'),\n    item_code: base,\n    qty: agg.qty,\n    expected_delivery: agg.date,\n    // Formula used to find the matching Airtable record.\n    airtable_formula: airtableEquals('ERP Item Code', base),\n    // The fields to write onto that Airtable record.\n    airtable_fields: {\n      'PO Number': po.name,\n      'PO Qty': agg.qty,\n      // e.g. \"Preemie ×12, Newborn ×24\" (null if no sizes).\n      'PO Size Breakdown': agg.sizes.join(', ') || null,\n      Vendor: po.supplier,\n      'Expected Delivery': agg.date,\n      'PO Status': po.status || null,\n    },\n  }));\n}\n// The reasons the order is on hold (empty list if missing).\nconst reasons = $json.holdReasons || [];\n// Build one row for the audit log table.\nconst row = auditRow({\n  // Which n8n run and workflow this was.\n  executionId: $execution.id, workflowName: $workflow.name,\n  // Data was going from Shopify to ERPNext, as a Sales Order.\n  source: 'shopify', target: 'erpnext', entityType: 'sales_order',\n  // The order ID, its first SKU, what we tried, and that it failed.\n  entityId: $json.orderGid, sku: ($json.skus || [])[0], action: 'import_order', status: 'failed',\n  // All the hold reasons in one line, separated by \"; \".\n  errorMessage: `ON HOLD: ${reasons.join('; ')}`,\n  // Extra details saved as JSON.\n  payload: { order_name: $json.orderName, source: $json.source, skus: $json.skus, hold_reasons: reasons },\n});\n// Slack alert only the first time (webhook), listing each reason as a bullet. Poll retries stay quiet.\nconst slack = $json.source === 'webhook'\n  ? `:package: *Shopify order ${$json.orderName} is ON HOLD*: not imported to the ERP.\\n• ${reasons.join('\\n• ')}\\n_Fix the SKU in the ERP; the hourly sync imports it automatically. Runbook §8._`\n  : null;\n// Output the audit row plus the Slack text.\nreturn { json: { ...row, slack_text: slack } };\n"
+      },
+      "id": "5b9b52a0-89f0-4ae8-a68f-c31c904ea7d7",
+      "name": "Result: Order Held",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Mode: Run Once for Each Item\n// ERPNext lookup or Sales Order creation failed. The hourly poll retries automatically\n// (the order ID makes it idempotent), so only alert on first sighting.\n// ---- lib/sync-helpers.js ------------------------------------------------\n// Error parsing, audit rows, Airtable write-backs and PO explosion shared by\n// the n8n Code nodes. Pure functions only — no n8n globals in here.\n\n// Frappe/ERPNext maps exceptions to HTTP codes; knowing them speeds up triage.\n// Lookup table: HTTP status code → a short, readable error category.\nconst ERP_ERROR_CATEGORIES = {\n  401: 'auth',            // AuthenticationError — bad/expired API key:secret\n  403: 'permission',      // PermissionError — role lacks perm on the DocType\n  404: 'not_found',       // DoesNotExistError\n  409: 'duplicate',       // DuplicateEntryError — item_code already exists\n  417: 'validation',      // ValidationError / LinkValidationError / MandatoryError\n  429: 'rate_limited',\n};\n\n// Pulls a JSON object out of an error string. n8n 2.x formats HTTP errors as\n//   417 - \"{\\\"exc_type\\\":\\\"LinkValidationError\\\",...}\"\n// i.e. the response body as a JSON *string literal*, so it may need two parses.\nfunction extractJsonBody(part) {\n  // Already an object? Nothing to do, return it.\n  if (part && typeof part === 'object') return part;\n  // Make it text, strip a leading \"417 - \" style status code, and trim spaces.\n  const s = String(part || '').replace(/^\\s*\\d{3} - /, '').trim();\n  // Two things to try: the whole text, and just the part from the first \"{\" to the last \"}\".\n  const attempts = [s, s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)];\n  // Try each one in turn.\n  for (const candidate of attempts) {\n    try {\n      // Read the text as JSON.\n      let v = JSON.parse(candidate);\n      // If that gave us more text (JSON inside a string), read it as JSON again.\n      if (typeof v === 'string') v = JSON.parse(v);\n      // Got a real object? Return it.\n      if (v && typeof v === 'object') return v;\n    } catch { /* try the next shape */ }\n  }\n  // Nothing worked: no JSON found.\n  return null;\n}\n\n// Normalizes an n8n error-output item ({ error: {...} }) from an HTTP Request node.\n// Shape verified against n8n 2.39.6 (see tests); kept defensive for other versions.\nfunction summarizeHttpError(itemJson) {\n  // The error details: inside \"error\" if present, else the item itself, else an empty object.\n  const e = (itemJson && itemJson.error) || itemJson || {};\n  // Gather every bit of error text we can find into one string, separated by \" | \".\n  const text = [e.message, typeof e.description === 'string' ? e.description : '', typeof e === 'string' ? e : '']\n    // Drop the empty bits.\n    .filter(Boolean)\n    // Make sure each bit is text.\n    .map(String)\n    // Join them.\n    .join(' | ');\n\n  // Look for the HTTP status code in the usual fields (null if none found).\n  let httpStatus = Number(e.httpCode || e.statusCode || e.status) || null;\n  // Not found? Try to read it from the error text instead.\n  if (!httpStatus) {\n    // Only trust the shapes n8n/axios actually emit (\"409 - ...\", \"status code 502\"),\n    // so digits inside IPs or ports (ECONNREFUSED 172.18.0.5:8080) aren't misread.\n    const m = text.match(/^([1-5]\\d{2}) - /) || text.match(/status code ([1-5]\\d{2})\\b/i);\n    // Found a match? Use the 3-digit number. Otherwise still null.\n    httpStatus = m ? Number(m[1]) : null;\n  }\n\n  // Pull exc_type / _server_messages (ERPNext) or error.message (Airtable) out of the body.\n  // The error type name, e.g. \"LinkValidationError\".\n  let excType = null;\n  // The human-readable message from the server.\n  let serverMessage = null;\n  // Look for a JSON body in the message, or failing that in the description.\n  const body = extractJsonBody(e.message) || extractJsonBody(e.description);\n  // Only dig further if we found one.\n  if (body) {\n    // ERPNext puts the type in exc_type; Airtable puts it in error.type.\n    excType = body.exc_type || (body.error && body.error.type) || null;\n    // ERPNext style 1: a list of messages, itself stored as JSON text.\n    if (body._server_messages) {\n      try {\n        // Read the list, then read each message (also JSON) and keep its \"message\" part.\n        serverMessage = JSON.parse(body._server_messages)\n          .map((m) => { try { return JSON.parse(m).message; } catch { return m; } })\n          // Join them with \"; \".\n          .join('; ');\n      } catch { /* malformed — ignore */ }\n    // ERPNext style 2: a Python traceback. The last line holds the actual error.\n    } else if (body.exception) {\n      serverMessage = String(body.exception).split('\\n').pop();\n    // Airtable style: error.message.\n    } else if (body.error && body.error.message) {\n      serverMessage = body.error.message;\n    }\n    // Remove any HTML tags (like <b>) from the message.\n    if (serverMessage) serverMessage = serverMessage.replace(/<[^>]+>/g, '');\n  }\n\n  // Pick a category: from the table above, else \"server\" for 5xx codes,\n  // \"client\" for other codes, or \"network\" if there was no code at all.\n  const category = ERP_ERROR_CATEGORIES[httpStatus] || (httpStatus >= 500 ? 'server' : httpStatus ? 'client' : 'network');\n  // These kinds of error usually fix themselves, so it's worth trying again later.\n  const retryable = category === 'server' || category === 'rate_limited' || category === 'network';\n  // Plain-text bodies arrive JSON-quoted (sometimes twice): 502 - \"\\\"Bad Gateway\\\"\".\n  // Backup message: the raw error text without the leading status code.\n  let fallback = String(e.message || text || 'Unknown error').replace(/^\\s*\\d{3} - /, '');\n  // Remove up to two layers of JSON quotes.\n  for (let i = 0; i < 2; i++) {\n    try {\n      // Read it as JSON.\n      const v = JSON.parse(fallback);\n      // Not plain text underneath? Stop and keep what we have.\n      if (typeof v !== 'string') break;\n      // Keep the unquoted text.\n      fallback = v;\n    } catch { break; }\n  }\n  // Final message, e.g. \"HTTP 417 — LinkValidationError — Item Group X not found\".\n  const message = [httpStatus && `HTTP ${httpStatus}`, excType, serverMessage || fallback]\n    // Drop empty parts.\n    .filter(Boolean)\n    // Join with \" — \".\n    .join(' — ')\n    // Cut to 1000 characters.\n    .slice(0, 1000);\n\n  // Hand back the summary.\n  return { httpStatus, category, retryable, excType, message };\n}\n\n// One row for audit.sync_audit_logs. Column order matches the INSERT in the Postgres nodes.\n// Takes friendly names (f.entityId) and returns database column names (entity_id).\n// \"|| null\" means: use null when the value is missing.\nfunction auditRow(f) {\n  return {\n    // The n8n run ID as text.\n    execution_id: f.executionId != null ? String(f.executionId) : null,\n    workflow_name: f.workflowName || null,\n    // Where the data came from and where it was going.\n    source_system: f.source,\n    target_system: f.target,\n    // What kind of thing (e.g. sales_order) and which one.\n    entity_type: f.entityType,\n    entity_id: f.entityId || null,\n    sku: f.sku || null,\n    // What we tried and how it went.\n    action: f.action,\n    status: f.status,\n    // \"??\" keeps 0 but turns missing into null.\n    http_status: f.httpStatus ?? null,\n    // Error text cut to 1000 characters, or null if there was no error.\n    error_message: f.errorMessage ? String(f.errorMessage).slice(0, 1000) : null,\n    approved_at: f.approvedAt || null,\n    // Extra details (empty object if none).\n    payload: f.payload || {},\n  };\n}\n\n// PATCH body for writing sync results back onto the Airtable Colorways record.\n// Transient failures go back to \"Pending\" so the safety-net poll retries them;\n// permanent ones go to \"Error\" for a human. (n8n ignores Retry On Fail on nodes that\n// use an error output, so this is the retry mechanism for ERP calls. See RUNBOOK §3.)\nfunction syncWriteback({ status, erpItemCode, errorMessage, nowIso, retryable = false }) {\n  // Did the sync work?\n  const ok = status === 'success';\n  return {\n    fields: {\n      // Worked → \"Synced\". Temporary failure → \"Pending\" (retry). Permanent failure → \"Error\".\n      'Sync Status': ok ? 'Synced' : retryable ? 'Pending' : 'Error',\n      // Only on success: also save the ERP item code.\n      ...(ok && erpItemCode ? { 'ERP Item Code': erpItemCode } : {}),\n      // Clear the error on success; otherwise save it (cut to 5000 characters).\n      'Last Sync Error': ok ? '' : String(errorMessage || '').slice(0, 5000),\n      // When this happened.\n      'Last Synced At': nowIso,\n    },\n    // Let Airtable convert values to the right field type.\n    typecast: true,\n  };\n}\n\n// Airtable formula: {Field}='value' with quotes/backslashes escaped.\nfunction airtableEquals(field, value) {\n  // Make the value text, then put a \"\\\" before any \"\\\" or \"'\" so they can't break the formula.\n  const escaped = String(value ?? '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");\n  // Build the formula, e.g. {ERP Item Code}='S-0108-0901'.\n  return `{${field}}='${escaped}'`;\n}\n\n// ERPNext Purchase Order doc → one row per COLORWAY (POs are placed per size variant,\n// S-0108-0901-10, but Production tracks the colorway S-0108-0901): summed qty, earliest\n// schedule date and a per-size breakdown. Needs lib/product-model.js for parseSku.\nfunction explodePurchaseOrder(po) {\n  // Running totals: colorway SKU → { qty, date, sizes }.\n  const byColorway = new Map();\n  // Go through each line on the PO.\n  for (const line of po.items || []) {\n    // Split the SKU into its parts (division, style, colorway, size).\n    const parsed = parseSku(line.item_code);\n    // The colorway SKU (without the size), or the raw code if it couldn't be parsed.\n    const base = parsed ? `${parsed.divisionCode}-${parsed.style}-${parsed.colorway}` : line.item_code;\n    // The size label (e.g. \"Preemie\"), or null if the SKU has no size.\n    const size = parsed && parsed.sizeCode ? sizeLabelFor(parsed.divisionCode, parsed.sizeCode) : null;\n    // Quantity as a number (0 if missing).\n    const qty = Number(line.qty) || 0;\n    // Delivery date: the line's own date, else the PO's date, else none.\n    const date = line.schedule_date || po.schedule_date || null;\n    // First line for this colorway? Start its running totals at zero.\n    if (!byColorway.has(base)) byColorway.set(base, { qty: 0, date: null, sizes: [] });\n    // Get the running totals for this colorway.\n    const agg = byColorway.get(base);\n    // Add this line's quantity.\n    agg.qty += qty;\n    // Keep the earliest date seen.\n    if (date && (!agg.date || date < agg.date)) agg.date = date;\n    // Note the size and quantity, e.g. \"Preemie ×12\".\n    if (size) agg.sizes.push(`${size} ×${qty}`);\n  }\n  // Turn the totals into one output row per colorway.\n  return [...byColorway.entries()].map(([base, agg]) => ({\n    po_number: po.name,\n    supplier: po.supplier,\n    // The PO status, or work it out: docstatus 1 means submitted, otherwise draft.\n    po_status: po.status || (po.docstatus === 1 ? 'Submitted' : 'Draft'),\n    item_code: base,\n    qty: agg.qty,\n    expected_delivery: agg.date,\n    // Formula used to find the matching Airtable record.\n    airtable_formula: airtableEquals('ERP Item Code', base),\n    // The fields to write onto that Airtable record.\n    airtable_fields: {\n      'PO Number': po.name,\n      'PO Qty': agg.qty,\n      // e.g. \"Preemie ×12, Newborn ×24\" (null if no sizes).\n      'PO Size Breakdown': agg.sizes.join(', ') || null,\n      Vendor: po.supplier,\n      'Expected Delivery': agg.date,\n      'PO Status': po.status || null,\n    },\n  }));\n}\n// The cleaned-up order from the earlier \"Verify & Normalize Order\" node.\nconst order = $('Verify & Normalize Order').item.json;\n// Turn the raw HTTP error into a tidy summary (status code, category, message, retry or not).\nconst err = summarizeHttpError($json);\n// Build one row for the audit log table.\nconst row = auditRow({\n  // Which n8n run and workflow this was.\n  executionId: $execution.id, workflowName: $workflow.name,\n  // Data was going from Shopify to ERPNext, as a Sales Order.\n  source: 'shopify', target: 'erpnext', entityType: 'sales_order',\n  // The order ID, its first SKU, what we tried, and that it failed.\n  entityId: order.orderGid, sku: order.skus[0], action: 'import_order', status: 'failed',\n  httpStatus: err.httpStatus, errorMessage: err.message,\n  // Extra details saved as JSON.\n  payload: { order_name: order.orderName, source: order.source, category: err.category, retryable: err.retryable },\n});\n// Slack alert only the first time (webhook). Poll retries stay quiet (null = no message).\nconst slack = order.source === 'webhook'\n  ? `:warning: *Shopify order ${order.orderName} failed to import* (ERP ${err.category}): ${err.message}\\n_${err.retryable ? 'Transient: the hourly sync will retry.' : 'Needs a fix in the ERP; the hourly sync retries after that.'}_`\n  : null;\n// Output the audit row plus the Slack text.\nreturn { json: { ...row, slack_text: slack } };\n"
+      },
+      "id": "5bf51426-64d3-47a6-a03d-a0106d337e41",
+      "name": "Result: Order ERP Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Mode: Run Once for Each Item\n// HMAC check failed: either a forged request or a rotated/wrong client secret.\n// ---- lib/sync-helpers.js ------------------------------------------------\n// Error parsing, audit rows, Airtable write-backs and PO explosion shared by\n// the n8n Code nodes. Pure functions only — no n8n globals in here.\n\n// Frappe/ERPNext maps exceptions to HTTP codes; knowing them speeds up triage.\n// Lookup table: HTTP status code → a short, readable error category.\nconst ERP_ERROR_CATEGORIES = {\n  401: 'auth',            // AuthenticationError — bad/expired API key:secret\n  403: 'permission',      // PermissionError — role lacks perm on the DocType\n  404: 'not_found',       // DoesNotExistError\n  409: 'duplicate',       // DuplicateEntryError — item_code already exists\n  417: 'validation',      // ValidationError / LinkValidationError / MandatoryError\n  429: 'rate_limited',\n};\n\n// Pulls a JSON object out of an error string. n8n 2.x formats HTTP errors as\n//   417 - \"{\\\"exc_type\\\":\\\"LinkValidationError\\\",...}\"\n// i.e. the response body as a JSON *string literal*, so it may need two parses.\nfunction extractJsonBody(part) {\n  // Already an object? Nothing to do, return it.\n  if (part && typeof part === 'object') return part;\n  // Make it text, strip a leading \"417 - \" style status code, and trim spaces.\n  const s = String(part || '').replace(/^\\s*\\d{3} - /, '').trim();\n  // Two things to try: the whole text, and just the part from the first \"{\" to the last \"}\".\n  const attempts = [s, s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)];\n  // Try each one in turn.\n  for (const candidate of attempts) {\n    try {\n      // Read the text as JSON.\n      let v = JSON.parse(candidate);\n      // If that gave us more text (JSON inside a string), read it as JSON again.\n      if (typeof v === 'string') v = JSON.parse(v);\n      // Got a real object? Return it.\n      if (v && typeof v === 'object') return v;\n    } catch { /* try the next shape */ }\n  }\n  // Nothing worked: no JSON found.\n  return null;\n}\n\n// Normalizes an n8n error-output item ({ error: {...} }) from an HTTP Request node.\n// Shape verified against n8n 2.39.6 (see tests); kept defensive for other versions.\nfunction summarizeHttpError(itemJson) {\n  // The error details: inside \"error\" if present, else the item itself, else an empty object.\n  const e = (itemJson && itemJson.error) || itemJson || {};\n  // Gather every bit of error text we can find into one string, separated by \" | \".\n  const text = [e.message, typeof e.description === 'string' ? e.description : '', typeof e === 'string' ? e : '']\n    // Drop the empty bits.\n    .filter(Boolean)\n    // Make sure each bit is text.\n    .map(String)\n    // Join them.\n    .join(' | ');\n\n  // Look for the HTTP status code in the usual fields (null if none found).\n  let httpStatus = Number(e.httpCode || e.statusCode || e.status) || null;\n  // Not found? Try to read it from the error text instead.\n  if (!httpStatus) {\n    // Only trust the shapes n8n/axios actually emit (\"409 - ...\", \"status code 502\"),\n    // so digits inside IPs or ports (ECONNREFUSED 172.18.0.5:8080) aren't misread.\n    const m = text.match(/^([1-5]\\d{2}) - /) || text.match(/status code ([1-5]\\d{2})\\b/i);\n    // Found a match? Use the 3-digit number. Otherwise still null.\n    httpStatus = m ? Number(m[1]) : null;\n  }\n\n  // Pull exc_type / _server_messages (ERPNext) or error.message (Airtable) out of the body.\n  // The error type name, e.g. \"LinkValidationError\".\n  let excType = null;\n  // The human-readable message from the server.\n  let serverMessage = null;\n  // Look for a JSON body in the message, or failing that in the description.\n  const body = extractJsonBody(e.message) || extractJsonBody(e.description);\n  // Only dig further if we found one.\n  if (body) {\n    // ERPNext puts the type in exc_type; Airtable puts it in error.type.\n    excType = body.exc_type || (body.error && body.error.type) || null;\n    // ERPNext style 1: a list of messages, itself stored as JSON text.\n    if (body._server_messages) {\n      try {\n        // Read the list, then read each message (also JSON) and keep its \"message\" part.\n        serverMessage = JSON.parse(body._server_messages)\n          .map((m) => { try { return JSON.parse(m).message; } catch { return m; } })\n          // Join them with \"; \".\n          .join('; ');\n      } catch { /* malformed — ignore */ }\n    // ERPNext style 2: a Python traceback. The last line holds the actual error.\n    } else if (body.exception) {\n      serverMessage = String(body.exception).split('\\n').pop();\n    // Airtable style: error.message.\n    } else if (body.error && body.error.message) {\n      serverMessage = body.error.message;\n    }\n    // Remove any HTML tags (like <b>) from the message.\n    if (serverMessage) serverMessage = serverMessage.replace(/<[^>]+>/g, '');\n  }\n\n  // Pick a category: from the table above, else \"server\" for 5xx codes,\n  // \"client\" for other codes, or \"network\" if there was no code at all.\n  const category = ERP_ERROR_CATEGORIES[httpStatus] || (httpStatus >= 500 ? 'server' : httpStatus ? 'client' : 'network');\n  // These kinds of error usually fix themselves, so it's worth trying again later.\n  const retryable = category === 'server' || category === 'rate_limited' || category === 'network';\n  // Plain-text bodies arrive JSON-quoted (sometimes twice): 502 - \"\\\"Bad Gateway\\\"\".\n  // Backup message: the raw error text without the leading status code.\n  let fallback = String(e.message || text || 'Unknown error').replace(/^\\s*\\d{3} - /, '');\n  // Remove up to two layers of JSON quotes.\n  for (let i = 0; i < 2; i++) {\n    try {\n      // Read it as JSON.\n      const v = JSON.parse(fallback);\n      // Not plain text underneath? Stop and keep what we have.\n      if (typeof v !== 'string') break;\n      // Keep the unquoted text.\n      fallback = v;\n    } catch { break; }\n  }\n  // Final message, e.g. \"HTTP 417 — LinkValidationError — Item Group X not found\".\n  const message = [httpStatus && `HTTP ${httpStatus}`, excType, serverMessage || fallback]\n    // Drop empty parts.\n    .filter(Boolean)\n    // Join with \" — \".\n    .join(' — ')\n    // Cut to 1000 characters.\n    .slice(0, 1000);\n\n  // Hand back the summary.\n  return { httpStatus, category, retryable, excType, message };\n}\n\n// One row for audit.sync_audit_logs. Column order matches the INSERT in the Postgres nodes.\n// Takes friendly names (f.entityId) and returns database column names (entity_id).\n// \"|| null\" means: use null when the value is missing.\nfunction auditRow(f) {\n  return {\n    // The n8n run ID as text.\n    execution_id: f.executionId != null ? String(f.executionId) : null,\n    workflow_name: f.workflowName || null,\n    // Where the data came from and where it was going.\n    source_system: f.source,\n    target_system: f.target,\n    // What kind of thing (e.g. sales_order) and which one.\n    entity_type: f.entityType,\n    entity_id: f.entityId || null,\n    sku: f.sku || null,\n    // What we tried and how it went.\n    action: f.action,\n    status: f.status,\n    // \"??\" keeps 0 but turns missing into null.\n    http_status: f.httpStatus ?? null,\n    // Error text cut to 1000 characters, or null if there was no error.\n    error_message: f.errorMessage ? String(f.errorMessage).slice(0, 1000) : null,\n    approved_at: f.approvedAt || null,\n    // Extra details (empty object if none).\n    payload: f.payload || {},\n  };\n}\n\n// PATCH body for writing sync results back onto the Airtable Colorways record.\n// Transient failures go back to \"Pending\" so the safety-net poll retries them;\n// permanent ones go to \"Error\" for a human. (n8n ignores Retry On Fail on nodes that\n// use an error output, so this is the retry mechanism for ERP calls. See RUNBOOK §3.)\nfunction syncWriteback({ status, erpItemCode, errorMessage, nowIso, retryable = false }) {\n  // Did the sync work?\n  const ok = status === 'success';\n  return {\n    fields: {\n      // Worked → \"Synced\". Temporary failure → \"Pending\" (retry). Permanent failure → \"Error\".\n      'Sync Status': ok ? 'Synced' : retryable ? 'Pending' : 'Error',\n      // Only on success: also save the ERP item code.\n      ...(ok && erpItemCode ? { 'ERP Item Code': erpItemCode } : {}),\n      // Clear the error on success; otherwise save it (cut to 5000 characters).\n      'Last Sync Error': ok ? '' : String(errorMessage || '').slice(0, 5000),\n      // When this happened.\n      'Last Synced At': nowIso,\n    },\n    // Let Airtable convert values to the right field type.\n    typecast: true,\n  };\n}\n\n// Airtable formula: {Field}='value' with quotes/backslashes escaped.\nfunction airtableEquals(field, value) {\n  // Make the value text, then put a \"\\\" before any \"\\\" or \"'\" so they can't break the formula.\n  const escaped = String(value ?? '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");\n  // Build the formula, e.g. {ERP Item Code}='S-0108-0901'.\n  return `{${field}}='${escaped}'`;\n}\n\n// ERPNext Purchase Order doc → one row per COLORWAY (POs are placed per size variant,\n// S-0108-0901-10, but Production tracks the colorway S-0108-0901): summed qty, earliest\n// schedule date and a per-size breakdown. Needs lib/product-model.js for parseSku.\nfunction explodePurchaseOrder(po) {\n  // Running totals: colorway SKU → { qty, date, sizes }.\n  const byColorway = new Map();\n  // Go through each line on the PO.\n  for (const line of po.items || []) {\n    // Split the SKU into its parts (division, style, colorway, size).\n    const parsed = parseSku(line.item_code);\n    // The colorway SKU (without the size), or the raw code if it couldn't be parsed.\n    const base = parsed ? `${parsed.divisionCode}-${parsed.style}-${parsed.colorway}` : line.item_code;\n    // The size label (e.g. \"Preemie\"), or null if the SKU has no size.\n    const size = parsed && parsed.sizeCode ? sizeLabelFor(parsed.divisionCode, parsed.sizeCode) : null;\n    // Quantity as a number (0 if missing).\n    const qty = Number(line.qty) || 0;\n    // Delivery date: the line's own date, else the PO's date, else none.\n    const date = line.schedule_date || po.schedule_date || null;\n    // First line for this colorway? Start its running totals at zero.\n    if (!byColorway.has(base)) byColorway.set(base, { qty: 0, date: null, sizes: [] });\n    // Get the running totals for this colorway.\n    const agg = byColorway.get(base);\n    // Add this line's quantity.\n    agg.qty += qty;\n    // Keep the earliest date seen.\n    if (date && (!agg.date || date < agg.date)) agg.date = date;\n    // Note the size and quantity, e.g. \"Preemie ×12\".\n    if (size) agg.sizes.push(`${size} ×${qty}`);\n  }\n  // Turn the totals into one output row per colorway.\n  return [...byColorway.entries()].map(([base, agg]) => ({\n    po_number: po.name,\n    supplier: po.supplier,\n    // The PO status, or work it out: docstatus 1 means submitted, otherwise draft.\n    po_status: po.status || (po.docstatus === 1 ? 'Submitted' : 'Draft'),\n    item_code: base,\n    qty: agg.qty,\n    expected_delivery: agg.date,\n    // Formula used to find the matching Airtable record.\n    airtable_formula: airtableEquals('ERP Item Code', base),\n    // The fields to write onto that Airtable record.\n    airtable_fields: {\n      'PO Number': po.name,\n      'PO Qty': agg.qty,\n      // e.g. \"Preemie ×12, Newborn ×24\" (null if no sizes).\n      'PO Size Breakdown': agg.sizes.join(', ') || null,\n      Vendor: po.supplier,\n      'Expected Delivery': agg.date,\n      'PO Status': po.status || null,\n    },\n  }));\n}\n// Build one row for the audit log table.\nconst row = auditRow({\n  // Which n8n run and workflow this was.\n  executionId: $execution.id, workflowName: $workflow.name,\n  // The request claimed to be a Shopify order for ERPNext.\n  source: 'shopify', target: 'erpnext', entityType: 'sales_order',\n  // The order ID it claimed, and that the signature check failed (401 = not authorized).\n  entityId: $json.orderGid, action: 'verify_signature', status: 'failed', httpStatus: 401,\n  errorMessage: 'Invalid or missing X-Shopify-Hmac-Sha256 signature: payload discarded',\n  // Extra details saved as JSON, to help work out where the request came from.\n  payload: { order_name: $json.orderName, webhook_id: $json.webhookId, shop_domain: $json.shopDomain },\n});\n// Output the audit row plus a Slack alert explaining the likely cause and fix.\nreturn { json: { ...row, slack_text: `:lock: *Rejected an unsigned/forged Shopify webhook* (claimed order ${$json.orderName || 'n/a'}, shop ${$json.shopDomain || 'n/a'}). If every order is rejected, the app's client secret was probably rotated: update SHOPIFY_CLIENT_SECRET. Runbook §8.` } };\n"
+      },
+      "id": "7dc47071-0e8c-4309-a42d-6d9536979527",
+      "name": "Result: Rejected Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "0e401f24-1784-4abd-a8ef-019b17529cb7",
+              "leftValue": "={{ $json.source }}",
+              "rightValue": "webhook",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5242a240-81d8-4cfa-aa5d-af6c330af54e",
+      "name": "Webhook Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3340,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit.sync_audit_logs\n  (execution_id, workflow_name, source_system, target_system, entity_type, entity_id,\n   sku, action, status, http_status, error_message, approved_at, payload)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::int, $11, $12::timestamptz, $13::jsonb);",
+        "options": {
+          "queryReplacement": "={{ [$json.execution_id, $json.workflow_name, $json.source_system, $json.target_system, $json.entity_type, $json.entity_id, $json.sku, $json.action, $json.status, $json.http_status, $json.error_message, $json.approved_at, JSON.stringify($json.payload || {})] }}"
+        }
+      },
+      "id": "f7d6d3ac-764d-462a-ac9e-af4f2fc2b12b",
+      "name": "Write Audit Log",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3580,
+        60
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "lsWarehousePgCrd",
+          "name": "LS Warehouse (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "b951bbbc-fe4f-4c66-a865-26a7c1970eb4",
+              "leftValue": "={{ $env.SLACK_WEBHOOK_URL && $json.slack_text ? 'yes' : '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f222816b-87f3-4ff1-af80-b61874499591",
+      "name": "Alert Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3340,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.slack_text }) }}",
+        "options": {}
+      },
+      "id": "1a105178-c911-4758-acbd-fef527239710",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3580,
+        340
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Shopify orders/create": {
+      "main": [
+        [
+          {
+            "node": "Verify & Normalize Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hourly Reconcile": {
+      "main": [
+        [
+          {
+            "node": "Shopify Configured?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shopify Configured?": {
+      "main": [
+        [
+          {
+            "node": "Get Shopify Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Shopify Token": {
+      "main": [
+        [
+          {
+            "node": "Load Order Sync State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Order Sync State": {
+      "main": [
+        [
+          {
+            "node": "Fetch Orders to Reconcile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Orders to Reconcile": {
+      "main": [
+        [
+          {
+            "node": "Verify & Normalize Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify & Normalize Order": {
+      "main": [
+        [
+          {
+            "node": "Signature Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature Valid?": {
+      "main": [
+        [
+          {
+            "node": "Order Lines Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result: Rejected Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Order Lines Valid?": {
+      "main": [
+        [
+          {
+            "node": "Find Existing Sales Order",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result: Order Held",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Existing Sales Order": {
+      "main": [
+        [
+          {
+            "node": "Already Imported?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result: Order ERP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Imported?": {
+      "main": [
+        [
+          {
+            "node": "Result: Duplicate Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Look Up SKUs in ERP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Look Up SKUs in ERP": {
+      "main": [
+        [
+          {
+            "node": "Match SKUs & Build Sales Order",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result: Order ERP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match SKUs & Build Sales Order": {
+      "main": [
+        [
+          {
+            "node": "All SKUs Known?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All SKUs Known?": {
+      "main": [
+        [
+          {
+            "node": "Create Sales Order",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result: Order Held",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Sales Order": {
+      "main": [
+        [
+          {
+            "node": "Submit Sales Order",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result: Order ERP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit Sales Order": {
+      "main": [
+        [
+          {
+            "node": "Result: Order Imported",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result: Order ERP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result: Duplicate Skipped": {
+      "main": [
+        [
+          {
+            "node": "Webhook Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result: Order Imported": {
+      "main": [
+        [
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result: Order Held": {
+      "main": [
+        [
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result: Order ERP Error": {
+      "main": [
+        [
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result: Rejected Signature": {
+      "main": [
+        [
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Needed?": {
+      "main": [
+        [
+          {
+            "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "lsWf00ErrorHndlr"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}

@@ -1,0 +1,258 @@
+{
+  "id": "lsWf03Freshness0",
+  "name": "LS-03 Sync Pipeline Health Check",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## LS-03 Pipeline health check\nHourly: how long since the last successful sync, and what is the 24h error rate?\n\nEvery run is recorded in `audit.pipeline_health_checks` (trend history). Breaches alert Slack.\n\nSnowflake equivalent: a Task + ACCOUNT_USAGE.TASK_HISTORY / COPY_HISTORY checks (see sql/snowflake).",
+        "width": 440,
+        "height": 260
+      },
+      "id": "adbd0cef-1c40-434e-a45f-d8cc87f3ee6d",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -480,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "50bc1878-c9cd-4739-a991-609b7a06b8c2",
+      "name": "Hourly",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  EXTRACT(EPOCH FROM (now() - MAX(created_at) FILTER (WHERE status = 'success'))) / 3600.0 AS hours_since_last_success,\n  COUNT(*) FILTER (WHERE created_at > now() - interval '24 hours') AS events_24h,\n  COUNT(*) FILTER (WHERE created_at > now() - interval '24 hours' AND status = 'failed') AS failures_24h\nFROM audit.sync_audit_logs\nWHERE workflow_name IS DISTINCT FROM 'demo-seed';",
+        "options": {}
+      },
+      "id": "15246a16-d951-4721-a2f0-52ecf45a4ee3",
+      "name": "Query Pipeline Health",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "lsWarehousePgCrd",
+          "name": "LS Warehouse (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Mode: Run Once for Each Item\n// Thresholds for the sync pipeline health check. Tune per business SLA.\n// Alert if: no success in 24 hours, more than 10% of syncs failed, or fewer than 1 sync ran.\nconst THRESHOLDS = { maxHoursSinceSuccess: 24, maxErrorRate24h: 0.10, minEvents24h: 1 };\n\n// Hours since the last successful sync. If there has never been one (null), use NaN (\"not a number\").\nconst h = $json.hours_since_last_success === null ? NaN : Number($json.hours_since_last_success);\n// How many syncs ran in the last 24 hours (0 if missing).\nconst events = Number($json.events_24h) || 0;\n// How many of those failed (0 if missing).\nconst failures = Number($json.failures_24h) || 0;\n// Share of syncs that failed, e.g. 0.25 = 25%. If nothing ran, call it 0 (avoids dividing by zero).\nconst errorRate = events ? failures / events : 0;\n\n// A list of every rule that was broken. Empty list = all healthy.\nconst breaches = [];\n// Rule 1: no successful sync ever, or the last one was too long ago.\nif (!Number.isFinite(h) || h > THRESHOLDS.maxHoursSinceSuccess) {\n  // Show the hours with 1 decimal, or \"recorded history\" if there's never been a success.\n  breaches.push(`No successful sync in ${Number.isFinite(h) ? h.toFixed(1) + 'h' : 'recorded history'} (max ${THRESHOLDS.maxHoursSinceSuccess}h)`);\n}\n// Rule 2: too many failures.\nif (errorRate > THRESHOLDS.maxErrorRate24h) {\n  // Show the rate as a percentage, e.g. \"25.0%\".\n  breaches.push(`24h error rate ${(errorRate * 100).toFixed(1)}% (max ${THRESHOLDS.maxErrorRate24h * 100}%)`);\n}\n// Rule 3: too few syncs ran at all, which usually means the pipeline is stopped.\nif (events < THRESHOLDS.minEvents24h) breaches.push(`Only ${events} sync events in 24h. Is the pipeline running?`);\n\n// Send one result item on to the next node.\nreturn { json: {\n  // Hours rounded to 2 decimals, or null if there's never been a success.\n  hours_since_last_success: Number.isFinite(h) ? Math.round(h * 100) / 100 : null,\n  events_24h: events,\n  failures_24h: failures,\n  // Error rate rounded to 4 decimals (e.g. 0.1234).\n  error_rate_24h: Math.round(errorRate * 10000) / 10000,\n  // \"breach\" if any rule was broken, otherwise \"ok\".\n  status: breaches.length ? 'breach' : 'ok',\n  breaches,\n  // The Slack message: a bulleted list of problems, or null (no message) if all is fine.\n  slack_text: breaches.length ? `:warning: *Sync pipeline health check*\\n• ${breaches.join('\\n• ')}` : null,\n} };\n"
+      },
+      "id": "32a183a3-9e91-4482-ac53-1490c334d0c8",
+      "name": "Evaluate Thresholds",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit.pipeline_health_checks (hours_since_last_success, events_24h, failures_24h, error_rate_24h, status, breaches) VALUES ($1::numeric, $2::int, $3::int, $4::numeric, $5, $6::jsonb);",
+        "options": {
+          "queryReplacement": "={{ [$json.hours_since_last_success, $json.events_24h, $json.failures_24h, $json.error_rate_24h, $json.status, JSON.stringify($json.breaches)] }}"
+        }
+      },
+      "id": "37aeb723-cd29-4303-a42c-c68714e27997",
+      "name": "Record Health Check",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        680,
+        -120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "lsWarehousePgCrd",
+          "name": "LS Warehouse (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "64ac903e-c7ac-49f5-ae57-475facc1088a",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "breach",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "dcc70356-3a23-4258-a55d-babd6ee91961",
+      "name": "Breach?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "a049bd7e-0cdb-4129-a62b-022cc8fb036e",
+              "leftValue": "={{ $env.SLACK_WEBHOOK_URL }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a0728980-3f61-4b93-aa0f-be2503805eaf",
+      "name": "Slack Configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        900,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.slack_text }) }}",
+        "options": {}
+      },
+      "id": "cb6f8100-ccd6-4676-a304-95e063484d84",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        40
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Hourly": {
+      "main": [
+        [
+          {
+            "node": "Query Pipeline Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Pipeline Health": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Thresholds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Thresholds": {
+      "main": [
+        [
+          {
+            "node": "Record Health Check",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Breach?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Breach?": {
+      "main": [
+        [
+          {
+            "node": "Slack Configured?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Configured?": {
+      "main": [
+        [
+          {
+            "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "lsWf00ErrorHndlr"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}

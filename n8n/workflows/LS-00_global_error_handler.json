@@ -1,0 +1,173 @@
+{
+  "id": "lsWf00ErrorHndlr",
+  "name": "LS-00 Global Error Handler",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## LS-00 Global Error Handler\nSet as the **Error Workflow** on every LS workflow (Workflow Settings).\n\nRuns when an execution *crashes* (unhandled error, or a node without an error output fails after retries).\n\n1. Logs to `audit.workflow_errors`\n2. Posts to Slack if `SLACK_WEBHOOK_URL` is set\n\nRunbook: docs/RUNBOOK.md §5",
+        "width": 420,
+        "height": 300
+      },
+      "id": "25d9e2d5-b0a6-4332-af36-75fad7808b62",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        -160
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "85d705bc-dc0c-46ef-abd0-9b8f4a230e11",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Mode: Run Once for Each Item\n// Input: Error Trigger payload { execution: {...}, workflow: {...} }\n// Details of the failed run (empty object if missing, so the lines below never crash).\nconst exec = $json.execution || {};\n// Details of the workflow that failed.\nconst wf = $json.workflow || {};\n// The error itself.\nconst err = exec.error || {};\n// Build the Slack message, one line per piece of information.\nconst text = [\n  // Headline with the workflow name.\n  `:rotating_light: *n8n workflow failed*: ${wf.name || 'unknown'}`,\n  // Which node was running when it failed.\n  `*Node:* ${exec.lastNodeExecuted || 'n/a'}`,\n  // The error message, cut to 500 characters so Slack stays readable.\n  `*Error:* ${(err.message || 'n/a').slice(0, 500)}`,\n  // A link to the failed run, if there is one (otherwise null, removed below).\n  exec.url ? `*Execution:* ${exec.url}` : null,\n  // Where to look for how to fix it.\n  '*Runbook:* docs/RUNBOOK.md#5-incident-response',\n// Drop the empty (null) lines, then join the rest with line breaks.\n].filter(Boolean).join('\\n');\n\n// Send one item on: the fields for the error log table plus the Slack text.\nreturn { json: {\n  // The run ID as text, or null if missing.\n  execution_id: exec.id != null ? String(exec.id) : null,\n  workflow_id: wf.id || null,\n  workflow_name: wf.name || null,\n  last_node: exec.lastNodeExecuted || null,\n  // Full error message, cut to 2000 characters to fit the database.\n  error_message: (err.message || '').slice(0, 2000),\n  execution_url: exec.url || null,\n  slack_text: text,\n} };\n"
+      },
+      "id": "181a3814-6766-4735-afb5-4c8f9762dd9a",
+      "name": "Format Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit.workflow_errors (execution_id, workflow_id, workflow_name, last_node, error_message, execution_url) VALUES ($1, $2, $3, $4, $5, $6);",
+        "options": {
+          "queryReplacement": "={{ [$json.execution_id, $json.workflow_id, $json.workflow_name, $json.last_node, $json.error_message, $json.execution_url] }}"
+        }
+      },
+      "id": "89730a6d-bb1e-4758-a707-e10779eed07d",
+      "name": "Log Workflow Error",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        460,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "lsWarehousePgCrd",
+          "name": "LS Warehouse (Postgres)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cbe59587-6ced-465f-a5eb-eec0da8aad21",
+              "leftValue": "={{ $env.SLACK_WEBHOOK_URL }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "382fd835-fe10-404e-a81e-366142012a0e",
+      "name": "Slack Configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        460,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.slack_text }) }}",
+        "options": {}
+      },
+      "id": "3cd6894a-c1fd-40ba-a5dc-2968fee50ee3",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        80
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Format Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alert": {
+      "main": [
+        [
+          {
+            "node": "Log Workflow Error",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Slack Configured?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Configured?": {
+      "main": [
+        [
+          {
+            "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}
